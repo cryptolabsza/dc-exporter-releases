@@ -4,52 +4,80 @@ GPU Metrics Exporter for Prometheus with **unique metrics not available in dcgm-
 
 ## Download
 
-| File | Description |
-|------|-------------|
-| [dc-exporter-rs_0.1.0_amd64.deb](https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/dc-exporter-rs_0.1.0_amd64.deb) | DEB package (recommended) |
-| [dc-exporter-rs](https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/dc-exporter-rs) | Standalone binary |
-| [SHA256SUMS](https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/SHA256SUMS) | Checksums |
+| Channel | Link | Description |
+|---------|------|-------------|
+| **Stable** | [Latest Release](https://github.com/cryptolabsza/dc-exporter-releases/releases/latest) | Production-ready |
+| **Dev** | [dev-latest](https://github.com/cryptolabsza/dc-exporter-releases/releases/tag/dev-latest) | Testing builds |
 
-**All Releases:** https://github.com/cryptolabsza/dc-exporter-releases/releases
+### Quick Download
+
+```bash
+# Download latest stable binary
+curl -L https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/dc-exporter-rs \
+  -o /usr/local/bin/dc-exporter-rs
+chmod +x /usr/local/bin/dc-exporter-rs
+```
 
 ## Installation
 
-### DEB Package (Recommended)
+### Option 1: DEB Package (Recommended)
 
 ```bash
-curl -LO https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/dc-exporter-rs_0.1.0_amd64.deb
-sudo dpkg -i dc-exporter-rs_0.1.0_amd64.deb
+# Download latest DEB package
+curl -LO https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/dc-exporter-rs_amd64.deb
+sudo dpkg -i dc-exporter-rs_amd64.deb
+
+# Enable and start service
 sudo systemctl enable --now dc-exporter
+
+# Verify
+curl http://localhost:9835/metrics | head -10
 ```
 
-**Verify:**
-```bash
-sudo systemctl status dc-exporter
-curl http://localhost:9835/metrics
-```
+**What's included:**
+- Binary: `/usr/local/bin/dc-exporter-rs`
+- Systemd service: `/etc/systemd/system/dc-exporter.service`
+- Auto-starts on port 9835
 
-**Package contents:**
-- `/usr/local/bin/dc-exporter-rs` - Binary
-- `/etc/systemd/system/dc-exporter.service` - Systemd service (port 9835)
-
-### Direct Binary
+### Option 2: Manual Setup
 
 ```bash
-sudo curl -L https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/dc-exporter-rs \
+# Download binary
+curl -L https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/dc-exporter-rs \
   -o /usr/local/bin/dc-exporter-rs
-sudo chmod +x /usr/local/bin/dc-exporter-rs
+chmod +x /usr/local/bin/dc-exporter-rs
+
+# Create systemd service
+cat > /etc/systemd/system/dc-exporter.service << 'EOF'
+[Unit]
+Description=DC Exporter - GPU Metrics for Prometheus
+After=network.target nvidia-persistenced.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dc-exporter-rs --port 9835
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable and start
+systemctl daemon-reload
+systemctl enable --now dc-exporter
 ```
 
 ## Usage
 
 ```bash
-# HTTP server mode (Prometheus metrics)
+# HTTP server (default)
 dc-exporter-rs --port 9835
 
-# Interactive TUI mode (like nvtop)
+# Interactive TUI (like nvtop)
 dc-exporter-rs --tui
 
-# One-shot mode (print and exit)
+# One-shot (print and exit)
 dc-exporter-rs --one-shot
 
 # Help
@@ -58,7 +86,7 @@ dc-exporter-rs --help
 
 ## Unique Metrics
 
-These metrics are **not available in the official dcgm-exporter**:
+These metrics are **not available in dcgm-exporter**:
 
 | Metric | Description |
 |--------|-------------|
@@ -66,47 +94,82 @@ These metrics are **not available in the official dcgm-exporter**:
 | `DCGM_FI_DEV_HOT_SPOT_TEMP` | Hotspot/Junction temperature |
 | `DCGM_FI_DEV_CLOCKS_THROTTLE_REASON` | Individual throttle reasons |
 | `GPU_AER_TOTAL_ERRORS` | PCIe AER error count |
-| `GPU_ERROR_STATE` | GPU health state (1=OK, 2=Error, 0=Unknown, 3=VM) |
-| `dc_exporter_build_info` | Version, build timestamp, git hash |
+| `GPU_ERROR_STATE` | GPU health (1=OK, 2=Error, 0=Unknown, 3=VM) |
+| `dc_exporter_build_info` | Version, timestamp, git hash |
 
-**Example output:**
+**Example:**
 ```prometheus
-DCGM_FI_DEV_VRAM_TEMP{gpu="0",UUID="GPU-xxx",modelName="NVIDIA GeForce RTX 4090"} 72
-DCGM_FI_DEV_HOT_SPOT_TEMP{gpu="0",UUID="GPU-xxx",modelName="NVIDIA GeForce RTX 4090"} 78
+DCGM_FI_DEV_VRAM_TEMP{gpu="0"} 72
+DCGM_FI_DEV_HOT_SPOT_TEMP{gpu="0"} 78
 DCGM_FI_DEV_CLOCKS_THROTTLE_REASON{reason="SwPowerCap",gpu="0"} 1
 GPU_ERROR_STATE{gpu="0"} 1
-dc_exporter_build_info{version="0.1.0",build_timestamp="1769295035",git_hash="c4cd78f"} 1
+dc_exporter_build_info{version="0.2.0",build_timestamp="1769457515",git_hash="d7631b9"} 1
 ```
 
 ## Features
 
-- **VRAM & Hotspot temps** - Direct register access for RTX 30/40/50 series, Professional, L40
-- **VM Passthrough Safe** - Non-interfering, collects metrics from VMs via guest agent
-- **Throttle Reasons** - Individual breakdown (thermal, power cap, etc.)
-- **Interactive TUI** - nvtop-like terminal interface with graphs
+- **VRAM & Hotspot temps** - Direct register access (RTX 30/40/50, L40, Professional)
+- **VM Passthrough Safe** - Non-interfering, collects from VMs via guest agent
+- **Throttle Reasons** - Individual breakdown (thermal, power, etc.)
+- **Interactive TUI** - nvtop-like terminal interface
 - **Build Info** - Track deployed versions via Prometheus
+- **Rate Limited** - Protection against DoS
+- **Watchdog** - Auto-recovery from stuck NVML
 
 ## Supported GPUs
 
-| Type | GPUs |
-|------|------|
+| Type | Models |
+|------|--------|
 | **Consumer** | RTX 5090/5080/5070, RTX 4090/4080/4070/4060, RTX 3090/3080/3070 |
-| **Professional** | RTX 6000/5000/4500/4000 Ada, RTX A6000/A5000/A4500 |
+| **Professional** | RTX 6000/5000/4500/4000 Ada, RTX A6000/A5000/A4500/A2000 |
 | **Datacenter** | H100, H200, A100, A40, A30, L40S, L40, L4 |
 
 ## Requirements
 
 - Linux x86_64
-- NVIDIA drivers (any version)
+- NVIDIA drivers (any version with NVML)
 - glibc 2.35+ (Ubuntu 22.04+, Debian 12+)
 - Root access (for VRAM/Hotspot temps)
-- `iomem=relaxed` kernel parameter (optional, for direct register access)
+
+### Optional: Enable VRAM/Hotspot Temperature
+
+Add to `/etc/default/grub`:
+```
+GRUB_CMDLINE_LINUX="iomem=relaxed"
+```
+
+Then run:
+```bash
+sudo update-grub && sudo reboot
+```
+
+## Service Management
+
+```bash
+systemctl start dc-exporter      # Start
+systemctl stop dc-exporter       # Stop
+systemctl restart dc-exporter    # Restart
+systemctl status dc-exporter     # Status
+journalctl -u dc-exporter -f     # Logs
+```
+
+## Updating
+
+```bash
+systemctl stop dc-exporter
+curl -L https://github.com/cryptolabsza/dc-exporter-releases/releases/latest/download/dc-exporter-rs \
+  -o /usr/local/bin/dc-exporter-rs
+chmod +x /usr/local/bin/dc-exporter-rs
+systemctl start dc-exporter
+curl http://localhost:9835/metrics | grep build_info
+```
 
 ## Prometheus Configuration
 
 ```yaml
 scrape_configs:
   - job_name: 'dc-exporter'
+    scrape_interval: 15s
     static_configs:
       - targets:
         - 'server1:9835'
@@ -124,6 +187,7 @@ sudo systemctl stop dc-exporter
 sudo systemctl disable dc-exporter
 sudo rm /usr/local/bin/dc-exporter-rs
 sudo rm /etc/systemd/system/dc-exporter.service
+sudo systemctl daemon-reload
 ```
 
 ## License
