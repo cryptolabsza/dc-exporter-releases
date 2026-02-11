@@ -176,6 +176,44 @@ scrape_configs:
         - 'server2:9835'
 ```
 
+## Grafana Dashboard
+
+A pre-built Grafana dashboard is included in the `dashboards/` directory.
+
+### Import Dashboard
+
+1. Open Grafana → Dashboards → Import
+2. Upload `dashboards/DC_Exporter_Details.json` or paste the JSON
+3. Select your Prometheus data source
+4. Click Import
+
+### Dashboard Features
+
+| Panel | Description |
+|-------|-------------|
+| **Total GPU Count** | Number of GPUs being monitored |
+| **Hosts with GPUs** | Number of unique hosts |
+| **GPU Utilization** | Real-time utilization graph |
+| **GPU Temperatures** | Core, Hotspot, and VRAM temps |
+| **GPU Power** | Usage vs Limit |
+| **Fan Speed** | Fan speed percentage |
+| **PCIe Throughput** | TX/RX bandwidth |
+| **NVENC/NVDEC** | Encoder/Decoder utilization |
+| **GPU Memory** | Used vs Free |
+| **GPU Processes** | Compute/Graphics process count |
+| **GPU Clocks** | SM and Memory clock speeds |
+| **PCIe AER Errors** | Error count table |
+| **GPU Error State** | Health status (OK/Error/VM) |
+| **GPU Inventory** | Table of all GPUs with details |
+
+### Quick Download
+
+```bash
+# Download dashboard JSON directly
+curl -L https://raw.githubusercontent.com/cryptolabsza/dc-exporter-releases/main/dashboards/DC_Exporter_Details.json \
+  -o DC_Exporter_Details.json
+```
+
 ## Uninstall
 
 ```bash
