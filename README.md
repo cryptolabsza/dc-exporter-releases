@@ -83,6 +83,9 @@ dc-exporter-rs --one-shot
 # Help
 dc-exporter-rs --help
 ```
+## Interactive TUI (like nvtop)
+<img width="742" height="817" alt="image-6" src="https://github.com/user-attachments/assets/ecd318ab-3f0a-41ab-ace3-7a7adfc97092" />
+
 
 ## Unique Metrics
 
