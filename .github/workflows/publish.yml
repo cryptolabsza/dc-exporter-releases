@@ -39,7 +39,7 @@ jobs:
       github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main'
     # PREPARATION PLACEHOLDER: root replaces this with reviewed recipe H1 SHA.
     # Recipe runs --validate-only in ci-publish-ephemeral; no writable job exists.
-    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@1111111111111111111111111111111111111111
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@b9b0174975acfb6980814d41c6e72e838b0d75ba
     with:
       run_id: ${{ inputs.run_id }}
       run_attempt: ${{ inputs.run_attempt }}
