@@ -1,0 +1,75 @@
+# TRACEWEAVER: file-role=protected-shared-publisher-recipe; req=REQ-PUB-004; trace=TRACE-PUB-004; ver=VER-PUB-004
+name: Trusted exporter validation recipe
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        required: true
+        type: string
+      run_attempt:
+        required: true
+        type: string
+      artifact_id:
+        required: true
+        type: string
+      sha:
+        required: true
+        type: string
+      branch:
+        required: true
+        type: string
+    secrets:
+      DC_EXPORTER_SOURCE_READER_APP_KEY:
+        required: true
+permissions:
+  contents: read
+jobs:
+  validate:
+    if: >-
+      github.repository == 'cryptolabsza/dc-exporter-releases' &&
+      github.repository_id == '1141480624' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main'
+    runs-on:
+      group: ci-publish-ephemeral
+      labels: ci-linux-publish-v1-r1141480624
+    timeout-minutes: 15
+    steps:
+      - name: Checkout protected publisher code only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Pull pinned trusted runtime
+        shell: bash
+        run: docker pull rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0
+      - name: Preflight publisher before providing reader credentials
+        working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: bash scripts/ci/pool-publish.sh preflight
+      - name: Mint dedicated source-reader installation token
+        id: reader
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42
+        with:
+          app-id: ${{ vars.DC_EXPORTER_SOURCE_READER_APP_ID }}
+          private-key: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
+          owner: cryptolabsza
+          repositories: dc-exporter-rs-public
+          permission-actions: read
+          permission-contents: read
+      - name: Validate receipts and bytes without release writes
+        working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        env:
+          SOURCE_READER_TOKEN: ${{ steps.reader.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_WORKFLOW_ID: ${{ vars.DC_EXPORTER_SOURCE_WORKFLOW_ID }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_RUN_ATTEMPT: ${{ inputs.run_attempt }}
+          INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
+          INPUT_SHA: ${{ inputs.sha }}
+          INPUT_BRANCH: ${{ inputs.branch }}
+        run: bash scripts/ci/pool-publish.sh validate
