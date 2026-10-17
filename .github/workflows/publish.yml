@@ -1,95 +1,50 @@
-name: Publish reviewed exporter artifact
+# TRACEWEAVER: file-role=protected-readonly-publisher-caller; req=REQ-PUB-004; trace=TRACE-PUB-004; ver=VER-PUB-004
+name: Validate reviewed exporter artifact
 on:
   workflow_dispatch:
     inputs:
-      recover_stage_id:
-        description: Restore a recorded staged transition after an API outage (promotion inputs ignored)
-        required: false
       run_id:
         description: Successful source CI run ID
-        required: false
+        required: true
+        type: string
       run_attempt:
         description: Exact successful source run attempt
-        required: false
+        required: true
+        type: string
       artifact_id:
         description: Exact artifact ID from that source run
-        required: false
+        required: true
+        type: string
       sha:
         description: Exact 40-character source commit SHA
-        required: false
+        required: true
+        type: string
       branch:
-        description: Trusted source branch (main remains hardware-held)
-        required: false
+        description: Protected source branch
+        required: true
         type: choice
         options: [dev, main]
-      tag:
-        description: Stable source tag (stable publication remains held)
-        required: false
 permissions:
-  contents: write
+  contents: read
 concurrency:
-  group: dc-exporter-promotion
+  group: dc-exporter-validation
   cancel-in-progress: false
 jobs:
-  publish:
+  validate:
     if: >-
       github.repository == 'cryptolabsza/dc-exporter-releases' &&
       github.repository_id == '1141480624' &&
       github.event_name == 'workflow_dispatch' &&
-      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
-      github.workflow_ref == format('cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/{0}', github.event.repository.default_branch)
-    runs-on:
-      group: dc-exporter-publish
-      labels: dc-exporter-publish
-    timeout-minutes: 15
-    steps:
-      - name: Checkout protected publisher code only
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          path: publisher-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Preflight publisher before providing reader credentials
-        working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
-        shell: bash
-        run: /usr/bin/python3 scripts/ci/publish.py --preflight
-      - name: Mint dedicated source-reader installation token
-        if: ${{ inputs.recover_stage_id == '' }}
-        id: reader
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
-        with:
-          app-id: ${{ vars.DC_EXPORTER_SOURCE_READER_APP_ID }}
-          private-key: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
-          owner: cryptolabsza
-          repositories: dc-exporter-rs-public
-          permission-actions: read
-          permission-contents: read
-      - name: Validate receipts and publish bytes
-        working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
-        shell: bash
-        env:
-          SOURCE_READER_TOKEN: ${{ steps.reader.outputs.token }}
-          GITHUB_TOKEN: ${{ github.token }}
-          SOURCE_WORKFLOW_ID: ${{ vars.DC_EXPORTER_SOURCE_WORKFLOW_ID }}
-          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          INPUT_RECOVER_STAGE_ID: ${{ inputs.recover_stage_id }}
-          INPUT_RUN_ID: ${{ inputs.run_id }}
-          INPUT_RUN_ATTEMPT: ${{ inputs.run_attempt }}
-          INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
-          INPUT_SHA: ${{ inputs.sha }}
-          INPUT_BRANCH: ${{ inputs.branch }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          umask 077
-          ulimit -t 600
-          ulimit -v 1048576
-          ulimit -u 128
-          if [[ -n "$INPUT_RECOVER_STAGE_ID" ]]; then
-            /usr/bin/python3 scripts/ci/publish.py --recover-stage-id "$INPUT_RECOVER_STAGE_ID"
-            exit 0
-          fi
-          /usr/bin/python3 scripts/ci/publish.py \
-            --run-id "$INPUT_RUN_ID" --run-attempt "$INPUT_RUN_ATTEMPT" \
-            --artifact-id "$INPUT_ARTIFACT_ID" --sha "$INPUT_SHA" \
-            --branch "$INPUT_BRANCH" --tag "$INPUT_TAG"
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main'
+    # PREPARATION PLACEHOLDER: root replaces this with reviewed recipe H1 SHA.
+    # Recipe runs --validate-only in ci-publish-ephemeral; no writable job exists.
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@b9b0174975acfb6980814d41c6e72e838b0d75ba
+    with:
+      run_id: ${{ inputs.run_id }}
+      run_attempt: ${{ inputs.run_attempt }}
+      artifact_id: ${{ inputs.artifact_id }}
+      sha: ${{ inputs.sha }}
+      branch: ${{ inputs.branch }}
+    secrets:
+      DC_EXPORTER_SOURCE_READER_APP_KEY: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
