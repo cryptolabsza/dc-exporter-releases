@@ -515,3 +515,103 @@ class LatestHTTPTransitionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SafeMainDiagnosticsTests(unittest.TestCase):
+    """Fixed diagnostics from actual main operations; exception data stays private."""
+    CANARY = 'CANARY-SECRET https://private.invalid/token=CANARY /Users/private API-BODY'
+
+    def setUp(self):
+        self.fixture = PublisherBoundaryTests()
+        self.fixture.setUp()
+        self.publisher = self.fixture.publisher
+        self.env = dict(SOURCE_WORKFLOW_ID='7', GITHUB_REPOSITORY='cryptolabsza/dc-exporter-releases',
+                        GITHUB_DEFAULT_BRANCH='main', GITHUB_REF='refs/heads/main', GITHUB_EVENT_NAME='workflow_dispatch',
+                        GITHUB_WORKFLOW_REF='cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main',
+                        GITHUB_SHA='c' * 40, GITHUB_RUN_ID='50', GITHUB_RUN_ATTEMPT='1')
+        self.args = ['--publish', '--run-id', '10', '--run-attempt', '2', '--artifact-id', '90',
+                     '--sha', self.fixture.sha, '--branch', 'dev']
+
+    def invoke(self, stage, error):
+        fixture, publisher = self.fixture, self.publisher
+        class API:
+            def __init__(self): self.assets = {}; self.tip_calls = 0
+            def fail(self, current):
+                if stage == current: raise error
+            def get_run(self, *args): self.fail('source-run'); return fixture.run
+            def get_artifact(self, *args): self.fail('source-artifact'); return fixture.artifact
+            def tip(self, branch):
+                self.tip_calls += 1
+                self.fail('source-receipt' if self.tip_calls == 1 else 'freshness')
+                return fixture.sha
+            def download_artifact(self, *args): self.fail('archive'); return fixture.archive()
+            def list_assets(self, tag): self.fail('immutable-upload'); return self.assets.get(tag, {})
+            def upload(self, tag, name, data): self.assets.setdefault(tag, {})[name] = data
+            def replace_latest(self, files): self.fail('latest-promotion')
+            def recover_stage(self, stage_id): self.fail('recovery')
+        api = API()
+        args = list(self.args)
+        env = dict(self.env)
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            if stage == 'arguments': args = ['--unknown-' + self.CANARY]
+            if stage == 'publisher-context': env.pop('GITHUB_DEFAULT_BRANCH')
+            if stage == 'source-input': env['SOURCE_WORKFLOW_ID'] = self.CANARY
+            if stage == 'recovery': args = ['--recover-stage-id', '2']
+            if stage == 'stable-validation':
+                args[-1] = 'main'
+                stack.enter_context(mock.patch.dict(fixture.run, {'head_branch': 'main'}))
+                stack.enter_context(mock.patch.dict(fixture.manifest['source'], {'ref': 'refs/heads/main'}))
+            if stage in {'runtime-preflight', 'api-initialization'}:
+                stack.enter_context(mock.patch.object(publisher, 'preflight', side_effect=error if stage == 'runtime-preflight' else None))
+                stack.enter_context(mock.patch.object(publisher, 'GithubAPI', side_effect=error))
+                api = None
+            stack.enter_context(mock.patch.dict(os.environ, env, clear=True))
+            stack.enter_context(contextlib.redirect_stdout(output))
+            stack.enter_context(contextlib.redirect_stderr(output))
+            result = publisher.main(args, api=api)
+        self.assertEqual(result, 1)
+        text = output.getvalue()
+        self.assertNotIn('CANARY', text)
+        self.assertNotIn('https:', text)
+        self.assertNotIn('/Users', text)
+        self.assertNotIn('Traceback', text)
+        return text
+
+    def expected(self, stage, category, status=None):
+        return (self.publisher.public_failure_messages()[0] + '\n' +
+                '::error::Publisher diagnostic phase=' + stage + ' category=' + category +
+                ('' if status is None else ' status=' + str(status)) + '\n')
+
+    def test_each_controlled_main_operation_reports_only_its_fixed_phase(self):
+        stages = ['runtime-preflight', 'api-initialization', 'source-run', 'source-artifact', 'source-receipt',
+                  'archive', 'freshness', 'immutable-upload', 'latest-promotion', 'recovery']
+        class PrivateError(RuntimeError):
+            def __str__(self): raise AssertionError('exception text must never be evaluated')
+        for stage in stages:
+            with self.subTest(stage=stage):
+                self.assertEqual(self.invoke(stage, PrivateError(self.CANARY)), self.expected(stage, 'internal'))
+
+    def test_parser_context_and_source_input_failures_keep_safe_fixed_categories(self):
+        for stage, category in [('arguments', 'validation'), ('publisher-context', 'validation'), ('source-input', 'validation'), ('stable-validation', 'validation')]:
+            with self.subTest(stage=stage):
+                self.assertEqual(self.invoke(stage, RuntimeError(self.CANARY)), self.expected(stage, category))
+
+    def test_http_error_logs_only_bounded_integer_status_without_url_body_headers_or_message(self):
+        import urllib.error
+        for status in [100, 403, 599, 99, 600, True, 'CANARY-STATUS']:
+            with self.subTest(status=status):
+                body = io.BytesIO(self.CANARY.encode())
+                error = urllib.error.HTTPError(self.CANARY, status, self.CANARY, {'secret': self.CANARY}, body)
+                bounded = status if type(status) is int and 100 <= status <= 599 else None
+                self.assertEqual(self.invoke('source-run', error), self.expected('source-run', 'http', bounded))
+                self.assertEqual(body.tell(), 0, 'diagnostics must never read an error body')
+                error.close()
+
+    def test_transport_validation_and_internal_errors_never_emit_exception_details(self):
+        import urllib.error
+        for error, category in [(urllib.error.URLError(self.CANARY), 'transport'),
+                                (TimeoutError(self.CANARY), 'transport'), (ConnectionError(self.CANARY), 'transport'),
+                                (ValueError(self.CANARY), 'validation'), (RuntimeError(self.CANARY), 'internal')]:
+            with self.subTest(category=category, type=type(error).__name__):
+                self.assertEqual(self.invoke('source-run', error), self.expected('source-run', category))
