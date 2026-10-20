@@ -76,7 +76,11 @@ separately from new-source builds.
 
 ## Protected publisher workflow
 
-Manual dispatch defaults to `mode=validate`. Validation uses a read-only release
+Manual dispatch defaults to `mode=validate`. Its separate
+`dc-exporter-validate.yml` recipe contains only the read-only validation job.
+The `dc-exporter-publish.yml` recipe contains only explicit publish and recovery
+jobs. GitHub checks every nested job permission before evaluating job conditions;
+this split keeps the default caller within its read-only permission ceiling. Validation uses a read-only release
 repository token and checks the exact protected source run, attempt, artifact,
 commit and branch without changing release assets. Supply `run_id`,
 `run_attempt`, `artifact_id`, `sha` and `branch` (`dev` or `main`). Leave
@@ -105,8 +109,10 @@ and contents read permissions. The bounded nonroot publisher container forwards
 credentials by environment name and retains its resource limits and read-only
 mounts. Stable publication remains disabled (`HARDWARE_ACCEPTED=False`).
 
-The caller currently retains the existing immutable recipe pin during local
-preparation. Before admission or execution, the owner must bind it to the exact
+During this local permission-split preparation, both recipe paths retain the
+existing real immutable pin. The new validation file does not exist at that old
+commit, so the caller is held from execution until the owner binds both paths to
+the new reviewed recipe commit. Before admission or execution, the owner must bind it to the exact
 reviewed recipe commit and approve the concrete cutover. Writable workflow
 execution and exact public assets remain subject to separate owner approval;
 local tests do not establish runtime or hardware acceptance.
