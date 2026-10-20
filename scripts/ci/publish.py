@@ -178,6 +178,24 @@ def public_failure_messages():
     return ['::error::Publisher validation or API operation failed']
 
 
+def failure_diagnostic(phase, error):
+    # Only fixed local labels and a bounded integer may reach public logs.
+    # Never stringify exceptions, inspect HTTP bodies/headers or emit URLs.
+    status = None
+    if isinstance(error, urllib.error.HTTPError):
+        category = 'http'
+        if type(error.code) is int and 100 <= error.code <= 599:
+            status = error.code
+    elif isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError)):
+        category = 'transport'
+    elif isinstance(error, (ValueError, KeyError)):
+        category = 'validation'
+    else:
+        category = 'internal'
+    return ('::error::Publisher diagnostic phase=' + phase + ' category=' + category +
+            ('' if status is None else ' status=' + str(status)))
+
+
 def validate_runtime(*, uid, euid, groups, devices, sockets, sudo, capabilities, memory, pids, cpu):
     require(uid != 0 and euid != 0 and not {'root', 'sudo', 'wheel', 'docker', 'libvirt', 'libvirt-qemu', 'lxd', 'disk', 'kmem'}.intersection(groups))
     require(not devices and not sockets and not sudo and capabilities == 0)
@@ -526,39 +544,54 @@ def main(argv=None, *, api=None):
     parser.add_argument('--sha')
     parser.add_argument('--branch', choices=['dev', 'main'])
     parser.add_argument('--tag', default='')
+    phase = 'arguments'
     try:
         args = parser.parse_args(argv)
         require(not (args.validate_only and args.publish))
         if args.preflight:
             require(not args.validate_only and not args.publish)
             require(all(value is None for value in [args.run_id, args.run_attempt, args.artifact_id, args.sha, args.branch, args.recover_stage_id]) and not args.tag)
+            phase = 'runtime-preflight'
             preflight()
             return 0
+        phase = 'publisher-context'
         default = os.environ['GITHUB_DEFAULT_BRANCH']
         require(re.fullmatch(r'[A-Za-z0-9_.-]+', default) is not None)
         require(os.environ['GITHUB_REPOSITORY'] == RELEASE_REPOSITORY and os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch')
         require(os.environ['GITHUB_REF'] == 'refs/heads/' + default and os.environ['GITHUB_WORKFLOW_REF'] == f'{RELEASE_REPOSITORY}/.github/workflows/publish.yml@refs/heads/{default}')
         if args.recover_stage_id is not None:
+            phase = 'recovery'
             require(not args.validate_only and not args.publish)
             require(positive(args.recover_stage_id) and all(value is None for value in [args.run_id, args.run_attempt, args.artifact_id, args.sha, args.branch]) and not args.tag)
             if api is None:
+                phase = 'runtime-preflight'
                 preflight()
+                phase = 'api-initialization'
                 api = GithubAPI(target_only=True, read_only=False)
+            phase = 'recovery'
             api.recover_stage(args.recover_stage_id)
             print('Publisher recovery verified a complete asset set')
             return 0
+        phase = 'source-input'
         workflow_id = int(os.environ['SOURCE_WORKFLOW_ID'])
         require(positive(workflow_id))
         require(positive(args.run_id) and positive(args.run_attempt) and positive(args.artifact_id) and args.branch in {'dev', 'main'})
         source = dict(repository=SOURCE_REPOSITORY, repository_id=SOURCE_REPOSITORY_ID, sha=args.sha, ref='refs/heads/' + args.branch, run_id=args.run_id, run_attempt=args.run_attempt, artifact_name=f'dc-exporter-{SOURCE_REPOSITORY_ID}-{args.run_id}-{args.run_attempt}-{args.sha}')
         validate_source(source)
         if api is None:
+            phase = 'runtime-preflight'
             preflight()
+            phase = 'api-initialization'
             api = GithubAPI(read_only=not args.publish)
+        phase = 'source-run'
         run = api.get_run(args.run_id, args.run_attempt)
+        phase = 'source-artifact'
         artifact = api.get_artifact(args.artifact_id)
+        phase = 'source-receipt'
         validate_receipt(run, artifact, expected=source, workflow_id=workflow_id, artifact_id=args.artifact_id, tip=api.tip(args.branch))
+        phase = 'archive'
         files, manifest = validate_archive(api.download_artifact(args.artifact_id), source)
+        phase = 'freshness'
         require(api.tip(args.branch) == args.sha)
         if not args.publish:
             require(not args.tag)
@@ -566,18 +599,23 @@ def main(argv=None, *, api=None):
             return 0
         if args.branch == 'main':
             # Fail before tag/history API work and publication until acceptance.
+            phase = 'stable-validation'
             require(HARDWARE_ACCEPTED)
             validate_stable(source, args.tag, manifest['cargo_version'], tag_sha=api.tag_sha(args.tag), main_ancestor=api.main_ancestor(args.sha), hardware_accepted=HARDWARE_ACCEPTED)
             require(api.tip('main') == args.sha)
+            phase = 'immutable-upload'
             publish_immutable(api, args.tag, files)
         else:
             require(not args.tag and api.tip('dev') == args.sha)
+            phase = 'immutable-upload'
             publish_immutable(api, 'dev-' + args.sha, files)
+            phase = 'latest-promotion'
             promote_latest(api, source, files)
         print('Publisher verified exact artifact bytes')
         return 0
-    except Exception:
+    except Exception as error:
         print(public_failure_messages()[0], file=sys.stderr)
+        print(failure_diagnostic(phase, error), file=sys.stderr)
         return 1
 
 
