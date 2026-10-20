@@ -285,7 +285,7 @@ class GithubAPI:
             require(not source and self.tip('dev') == self.latest_expected_sha)
         token = self.reader if source else self.writer
         require(bool(token))
-        headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/octet-stream' if raw else 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'dc-exporter-bytes-publisher'}
+        headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/octet-stream' if raw and not source else 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'dc-exporter-bytes-publisher'}
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode() if payload is not None else None
         if data is not None:
             headers['Content-Type'] = 'application/octet-stream' if upload else 'application/json'
