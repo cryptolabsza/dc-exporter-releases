@@ -615,3 +615,103 @@ class SafeMainDiagnosticsTests(unittest.TestCase):
                                 (ValueError(self.CANARY), 'validation'), (RuntimeError(self.CANARY), 'internal')]:
             with self.subTest(category=category, type=type(error).__name__):
                 self.assertEqual(self.invoke('source-run', error), self.expected('source-run', category))
+
+
+class ArtifactDownloadMediaTypeTests(unittest.TestCase):
+    """Actual transport request media type is independent of raw response bytes."""
+    def setUp(self):
+        self.publisher = helper()
+        self.payload = b'PK\x03\x04\xffOPAQUE-ZIP-FIXTURE'
+        self.requests = []
+        self.read_limits = []
+        self.identities = dict(source=1416116330, target=1141480624)
+
+    def server(self):
+        import urllib.error
+        import urllib.parse
+        test = self
+        publisher = self.publisher
+        class Response:
+            def __init__(self, data): self.data = data
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, maximum):
+                test.read_limits.append(maximum)
+                return self.data[:maximum]
+        class Server:
+            def open(self, request, timeout):
+                test.requests.append(request)
+                test.assertEqual(timeout, 60)
+                path = urllib.parse.urlsplit(request.full_url).path
+                accept = request.get_header('Accept')
+                if path == '/repos/' + publisher.SOURCE_REPOSITORY:
+                    result = dict(id=test.identities['source'], full_name=publisher.SOURCE_REPOSITORY)
+                elif path == '/repos/' + publisher.RELEASE_REPOSITORY:
+                    result = dict(id=test.identities['target'], full_name=publisher.RELEASE_REPOSITORY)
+                elif path.endswith('/actions/artifacts/90/zip'):
+                    if accept != 'application/vnd.github+json':
+                        raise urllib.error.HTTPError(request.full_url, 415, 'modeled media type rejection', {}, None)
+                    test.assertEqual(request.get_header('Authorization'), 'Bearer synthetic-reader')
+                    return Response(test.payload)
+                elif path.endswith('/actions/artifacts/90'):
+                    result = {'id': 90, 'name': 'opaque archive metadata'}
+                elif '/releases/1/assets' in path:
+                    result = [dict(id=91, name='dc-exporter-rs', size=len(test.payload))]
+                elif path.endswith('/releases/assets/91'):
+                    test.assertEqual(accept, 'application/octet-stream')
+                    test.assertEqual(request.get_header('Authorization'), 'Bearer synthetic-target')
+                    return Response(test.payload)
+                else:
+                    raise AssertionError('unexpected fixture route')
+                test.assertEqual(accept, 'application/vnd.github+json')
+                return Response(json.dumps(result).encode())
+        return Server()
+
+    def api(self, server=None):
+        with mock.patch.dict(os.environ, {'SOURCE_READER_TOKEN': 'synthetic-reader', 'GITHUB_TOKEN': 'synthetic-target'}, clear=True), \
+             mock.patch('urllib.request.build_opener', return_value=server or self.server()):
+            return self.publisher.GithubAPI()
+
+    def test_source_artifact_download_uses_json_accept_but_returns_opaque_zip_bytes(self):
+        import urllib.error
+        api = self.api()
+        try:
+            data = api.download_artifact(90)
+        except urllib.error.HTTPError as error:
+            self.fail('Actual artifact transport used the rejected media type: status ' + str(error.code))
+        self.assertEqual(data, self.payload)
+        self.assertEqual(self.requests[-1].get_header('Accept'), 'application/vnd.github+json')
+        self.assertTrue(all(limit == self.publisher.MAX_TOTAL + 1 for limit in self.read_limits))
+
+    def test_target_release_asset_keeps_octet_stream_and_metadata_keeps_json_accept(self):
+        api = self.api()
+        self.assertEqual(api.get_artifact(90)['id'], 90)
+        self.assertEqual(api.release_files({'id': 1}), {'dc-exporter-rs': self.payload})
+        self.assertEqual(self.requests[-1].get_header('Accept'), 'application/octet-stream')
+
+    def test_transport_retains_identity_read_only_repository_scope_and_size_bounds(self):
+        api = self.api()
+        before = len(self.requests)
+        for method, path, source in [('POST', '/repos/' + self.publisher.RELEASE_REPOSITORY + '/releases', False),
+                                      ('GET', '/repos/unrelated/repository', True)]:
+            with self.subTest(method=method), self.assertRaises(ValueError):
+                api.request(method, path, source=source)
+        self.assertEqual(len(self.requests), before)
+        with mock.patch.object(self.publisher, 'MAX_TOTAL', 4), self.assertRaises(ValueError):
+            api.request('GET', '/repos/' + self.publisher.RELEASE_REPOSITORY + '/releases/assets/91', raw=True)
+        for identity in ['source', 'target']:
+            with self.subTest(identity=identity):
+                self.identities[identity] = 9
+                with self.assertRaises(ValueError): self.api()
+                self.identities[identity] = 1416116330 if identity == 'source' else 1141480624
+
+    def test_source_zip_redirect_retains_https_and_strips_reader_authorization(self):
+        api = self.api()
+        source = urllib.request.Request('https://api.github.com/repos/' + self.publisher.SOURCE_REPOSITORY + '/actions/artifacts/90/zip',
+                                        headers={'Authorization': 'Bearer synthetic-reader', 'Accept': 'application/vnd.github+json'})
+        redirect = self.publisher.SafeRedirect()
+        forwarded = redirect.redirect_request(source, None, 302, 'Found', {}, 'https://signed-storage.invalid/artifact')
+        self.assertIsNone(forwarded.get_header('Authorization'))
+        self.assertEqual(forwarded.get_header('Accept'), 'application/vnd.github+json')
+        with self.assertRaises(ValueError):
+            redirect.redirect_request(source, None, 302, 'Found', {}, 'http://signed-storage.invalid/artifact')
