@@ -416,3 +416,401 @@ class ReadOnlyHTTPPreparationTests(unittest.TestCase):
             self.assertEqual(publisher.main(args), 0)
         self.assertEqual(len(requests), 7)
         self.assertTrue(all(method == 'GET' for method, _ in requests))
+
+
+class ProtectedActivationWorkflowTests(unittest.TestCase):
+    """Inspect the parsed, actual Actions entrypoints, including job boundaries."""
+    def setUp(self):
+        import yaml
+        self.root = pathlib.Path(__file__).resolve().parents[1]
+        self.caller = yaml.load((self.root / '.github/workflows/publish.yml').read_text(), Loader=yaml.BaseLoader)
+        self.recipe = yaml.load((self.root / '.github/workflows/dc-exporter-publish.yml').read_text(), Loader=yaml.BaseLoader)
+
+    def test_dispatch_defaults_to_validation_and_recovery_has_no_required_source_input(self):
+        inputs = self.caller['on']['workflow_dispatch']['inputs']
+        self.assertIn('mode', inputs, 'actual dispatch has no activation mode')
+        self.assertEqual(inputs['mode']['default'], 'validate')
+        self.assertEqual(inputs['mode']['type'], 'choice')
+        self.assertEqual(inputs['mode']['options'], ['validate', 'publish', 'recover'])
+        self.assertEqual(inputs['recover_stage_id']['required'], 'false')
+        for key in ['run_id', 'run_attempt', 'artifact_id', 'sha', 'branch']:
+            self.assertEqual(inputs[key]['required'], 'false', key)
+            self.assertEqual(self.recipe['on']['workflow_call']['inputs'][key]['required'], 'false', key)
+        self.assertEqual(self.recipe['on']['workflow_call']['inputs']['mode']['default'], 'validate')
+
+    def selected_jobs(self, workflow, inputs, context=None):
+        import ast
+        import re
+        values = {'github.repository': 'cryptolabsza/dc-exporter-releases',
+                  'github.repository_id': '1141480624', 'github.event_name': 'workflow_dispatch',
+                  'github.event.repository.default_branch': 'main', 'github.ref': 'refs/heads/main',
+                  'github.ref_protected': True,
+                  'github.workflow_ref': 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main'}
+        values.update(context or {})
+        values.update({'inputs.' + key: value for key, value in inputs.items()})
+        def evaluate(node):
+            if isinstance(node, ast.Constant): return node.value
+            if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+                return all(evaluate(value) for value in node.values)
+            if isinstance(node, ast.Compare) and len(node.ops) == 1:
+                left, right = evaluate(node.left), evaluate(node.comparators[0])
+                if isinstance(node.ops[0], ast.Eq): return left == right
+                if isinstance(node.ops[0], ast.NotEq): return left != right
+            raise AssertionError('Unsupported actual workflow predicate')
+        selected = []
+        for name, job in workflow['jobs'].items():
+            expression = re.sub(r'\b(?:github|inputs)\.[A-Za-z_.]+',
+                                lambda match: repr(values[match[0]]), job['if']).replace('&&', ' and ')
+            if evaluate(ast.parse('(' + expression + ')', mode='eval').body): selected.append(name)
+        return selected
+
+    def test_only_explicit_publish_and_recover_jobs_have_minimal_writer_permissions(self):
+        for workflow in [self.caller, self.recipe]:
+            self.assertEqual(workflow['permissions'], {'contents': 'read'})
+            self.assertEqual(set(workflow['jobs']), {'validate', 'publish', 'recover'})
+            for mode, job in workflow['jobs'].items():
+                self.assertEqual(job['permissions'], {'contents': 'read' if mode == 'validate' else 'write'})
+                self.assertIn("inputs.mode == '" + mode + "'", job['if'])
+                if mode == 'publish':
+                    self.assertIn("inputs.branch == 'dev'", job['if'])
+                if workflow is self.caller:
+                    self.assertEqual(job['with']['mode'], mode)
+                    self.assertRegex(job['uses'], r'^cryptolabsza/dc-exporter-releases/\.github/workflows/dc-exporter-publish\.yml@[0-9a-f]{40}$')
+                    self.assertNotIn('inherit', json.dumps(job.get('secrets', {})))
+            source = dict(mode='validate', run_id='10', run_attempt='2', artifact_id='90',
+                          sha=SHA, branch='dev', recover_stage_id='')
+            recovery = dict(mode='recover', run_id='', run_attempt='', artifact_id='',
+                            sha='', branch='', recover_stage_id='25')
+            for inputs, selected in [(source, ['validate']), (source | {'mode': 'publish'}, ['publish']),
+                                     (recovery, ['recover']), (source | {'mode': 'other'}, []),
+                                     (source | {'mode': 'publish', 'branch': 'main'}, []),
+                                     (source | {'recover_stage_id': '25'}, [])]:
+                self.assertEqual(self.selected_jobs(workflow, inputs), selected)
+            for key in ['run_id', 'run_attempt', 'artifact_id', 'sha', 'branch']:
+                self.assertEqual(self.selected_jobs(workflow, recovery | {key: source[key]}), [])
+                self.assertEqual(self.selected_jobs(workflow, source | {key: ''}), [])
+            for key, value in [('github.repository', 'wrong/repository'), ('github.repository_id', '9'),
+                               ('github.event_name', 'push'), ('github.event.repository.default_branch', 'dev'),
+                               ('github.ref', 'refs/heads/dev'), ('github.ref_protected', False),
+                               ('github.workflow_ref', 'wrong/workflow')]:
+                for inputs in [source, source | {'mode': 'publish'}, recovery]:
+                    self.assertEqual(self.selected_jobs(workflow, inputs, {key: value}), [])
+            self.assertNotIn('secrets', workflow['jobs']['recover'])
+            self.assertEqual(set(workflow['jobs']['recover'].get('with', {})) - {'mode', 'recover_stage_id'}, set())
+
+    def test_every_job_requires_exact_repository_default_main_protection_and_manual_workflow(self):
+        required = ["github.repository == 'cryptolabsza/dc-exporter-releases'",
+                    "github.repository_id == '1141480624'", "github.event_name == 'workflow_dispatch'",
+                    "github.ref == 'refs/heads/main'", 'github.ref_protected',
+                    "github.event.repository.default_branch == 'main'",
+                    "github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main'"]
+        for workflow in [self.caller, self.recipe]:
+            self.assertEqual(set(workflow['jobs']), {'validate', 'publish', 'recover'})
+            for mode in ['validate', 'publish', 'recover']:
+                for clause in required:
+                    with self.subTest(mode=mode, clause=clause):
+                        self.assertIn(clause, workflow['jobs'][mode]['if'])
+
+    def test_source_reader_is_fixed_source_only_and_never_minted_in_recovery(self):
+        self.assertIn('publish', self.recipe['jobs'])
+        self.assertIn('recover', self.recipe['jobs'])
+        for mode in ['validate', 'publish']:
+            steps = self.recipe['jobs'][mode]['steps']
+            readers = [step for step in steps if 'create-github-app-token@' in step.get('uses', '')]
+            self.assertEqual(len(readers), 1)
+            self.assertEqual(readers[0]['with']['owner'], 'cryptolabsza')
+            self.assertEqual(readers[0]['with']['repositories'], 'dc-exporter-rs-public')
+            self.assertEqual(readers[0]['with']['permission-actions'], 'read')
+            self.assertEqual(readers[0]['with']['permission-contents'], 'read')
+            preflight = next(i for i, step in enumerate(steps) if 'pool-publish.sh preflight' in step.get('run', ''))
+            self.assertLess(preflight, steps.index(readers[0]))
+            for step in steps:
+                if 'actions/checkout@' in step.get('uses', ''):
+                    self.assertEqual(step['with']['persist-credentials'], 'false')
+        encoded = json.dumps(self.recipe['jobs']['recover']['steps'])
+        for forbidden in ['create-github-app-token', 'SOURCE_READER', 'SOURCE_WORKFLOW_ID', 'inputs.run_id',
+                          'inputs.run_attempt', 'inputs.artifact_id', 'inputs.sha', 'inputs.branch']:
+            self.assertNotIn(forbidden, encoded)
+
+
+class ActualLauncherActivationTests(unittest.TestCase):
+    """Execute the real launcher against an inert argv/environment capture binary."""
+    def launch(self, mode, *, changes=None, omit=(), extra=()):
+        import subprocess
+        import sys
+        root = pathlib.Path(__file__).resolve().parents[1]
+        env = dict(PATH=os.environ['PATH'], GITHUB_REPOSITORY='cryptolabsza/dc-exporter-releases',
+                   GITHUB_REPOSITORY_ID='1141480624', GITHUB_DEFAULT_BRANCH='main',
+                   GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main', GITHUB_REF_PROTECTED='true',
+                   GITHUB_WORKFLOW_REF='cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main',
+                   GITHUB_SHA='c' * 40, GITHUB_RUN_ID='50', GITHUB_RUN_ATTEMPT='3',
+                   INPUT_RUN_ID='10', INPUT_RUN_ATTEMPT='2', INPUT_ARTIFACT_ID='90', INPUT_SHA=SHA,
+                   INPUT_BRANCH='dev', SOURCE_WORKFLOW_ID='7', SOURCE_READER_TOKEN='CANARY-READER',
+                   GITHUB_TOKEN='CANARY-WRITER', INPUT_RECOVER_STAGE_ID='25', INPUT_MODE='validate')
+        env.update(changes or {})
+        for key in omit: env.pop(key, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp)
+            capture = path / 'capture.json'
+            docker = path / 'docker'
+            docker.write_text('#!' + sys.executable + '\nimport json,os,sys\n' +
+                              'json.dump({"argv":sys.argv[1:]},open(os.environ["CAPTURE"],"w"))\n')
+            docker.chmod(0o755)
+            env['PATH'] = str(path) + os.pathsep + env['PATH']
+            env['CAPTURE'] = str(capture)
+            result = subprocess.run(['bash', str(root / 'scripts/ci/pool-publish.sh'), mode, *extra],
+                                    env=env, capture_output=True, text=True, timeout=5)
+            args = json.loads(capture.read_text())['argv'] if capture.exists() else None
+        self.assertNotIn('CANARY', result.stdout + result.stderr + json.dumps(args))
+        return result, args
+
+    def forwarded(self, args):
+        return [args[index + 1] for index, value in enumerate(args) if value == '--env']
+
+    def test_validation_forwards_publisher_run_identity_and_explicit_read_only_arguments(self):
+        result, args = self.launch('validate', omit=['INPUT_RECOVER_STAGE_ID'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = self.forwarded(args)
+        self.assertIn('GITHUB_RUN_ID', env)
+        self.assertIn('GITHUB_RUN_ATTEMPT', env)
+        self.assertEqual(args[args.index('scripts/ci/publish.py') + 1:],
+                         ['--validate-only', '--run-id', '10', '--run-attempt', '2', '--artifact-id', '90', '--sha', SHA, '--branch', 'dev'])
+
+    def test_explicit_dev_publish_uses_fixed_args_and_only_environment_credentials(self):
+        result, args = self.launch('publish', omit=['INPUT_RECOVER_STAGE_ID'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(args[args.index('scripts/ci/publish.py') + 1:],
+                         ['--publish', '--run-id', '10', '--run-attempt', '2', '--artifact-id', '90', '--sha', SHA, '--branch', 'dev'])
+        self.assertIn('SOURCE_READER_TOKEN', self.forwarded(args))
+        self.assertIn('GITHUB_TOKEN', self.forwarded(args))
+        self.assertIn('GITHUB_RUN_ID', self.forwarded(args))
+        self.assertIn('GITHUB_RUN_ATTEMPT', self.forwarded(args))
+
+    def test_target_only_recovery_needs_no_source_configuration_and_forwards_no_reader(self):
+        source = ['SOURCE_READER_TOKEN', 'SOURCE_WORKFLOW_ID', 'INPUT_RUN_ID', 'INPUT_RUN_ATTEMPT',
+                  'INPUT_ARTIFACT_ID', 'INPUT_SHA', 'INPUT_BRANCH']
+        result, args = self.launch('recover', omit=source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(args[args.index('scripts/ci/publish.py') + 1:], ['--recover-stage-id', '25'])
+        self.assertIn('GITHUB_TOKEN', self.forwarded(args))
+        self.assertNotIn('SOURCE_READER_TOKEN', self.forwarded(args))
+        self.assertNotIn('SOURCE_WORKFLOW_ID', self.forwarded(args))
+
+    def test_preflight_is_networkless_and_receives_no_credentials(self):
+        result, args = self.launch('preflight', omit=['SOURCE_READER_TOKEN', 'GITHUB_TOKEN', 'INPUT_RECOVER_STAGE_ID'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(args[args.index('--network') + 1], 'none')
+        self.assertNotIn('SOURCE_READER_TOKEN', self.forwarded(args))
+        self.assertNotIn('GITHUB_TOKEN', self.forwarded(args))
+
+    def test_invalid_context_modes_and_mixed_source_recovery_inputs_never_launch_container(self):
+        changes = [{'GITHUB_REPOSITORY_ID': '9'}, {'GITHUB_DEFAULT_BRANCH': 'dev'},
+                   {'GITHUB_EVENT_NAME': 'push'}, {'GITHUB_REF': 'refs/heads/dev'},
+                   {'GITHUB_REF_PROTECTED': 'false'}, {'GITHUB_WORKFLOW_REF': 'evil/workflow'},
+                   {'GITHUB_RUN_ID': '0'}, {'GITHUB_RUN_ATTEMPT': 'bad'}]
+        for change in changes:
+            with self.subTest(change=change):
+                result, args = self.launch('validate', changes=change, omit=['INPUT_RECOVER_STAGE_ID'])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIsNone(args)
+        for mode, changes, omit, extra in [('unknown', {}, (), ()), ('publish', {'INPUT_BRANCH': 'main'}, ('INPUT_RECOVER_STAGE_ID',), ()),
+                                           ('recover', {}, (), ()), ('validate', {}, (), ()),
+                                           ('validate', {}, ('INPUT_RECOVER_STAGE_ID',), ('--publish',))]:
+            with self.subTest(mode=mode, changes=changes):
+                result, args = self.launch(mode, changes=changes, omit=omit, extra=extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIsNone(args)
+
+
+class ActualPublishCLITransportTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = FormatTransitionRecoveryTests()
+        self.fixture.setUp()
+        self.publisher = self.fixture.publisher
+        self.boundary = baseline.PublisherBoundaryTests()
+        self.boundary.setUp()
+        self.boundary.sha = 'b' * 40
+        self.boundary.source = SOURCE | {'sha': 'b' * 40, 'artifact_name': f'dc-exporter-1416116330-10-2-{"b" * 40}'}
+        self.boundary.run['head_sha'] = 'b' * 40
+        self.boundary.artifact['name'] = self.boundary.source['artifact_name']
+        self.boundary.artifact['workflow_run']['head_sha'] = 'b' * 40
+        self.env = dict(SOURCE_READER_TOKEN='CANARY-READER', GITHUB_TOKEN='CANARY-WRITER', SOURCE_WORKFLOW_ID='7',
+                        GITHUB_REPOSITORY='cryptolabsza/dc-exporter-releases', GITHUB_DEFAULT_BRANCH='main',
+                        GITHUB_REF='refs/heads/main', GITHUB_EVENT_NAME='workflow_dispatch',
+                        GITHUB_WORKFLOW_REF='cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main',
+                        GITHUB_SHA='c' * 40, GITHUB_RUN_ID='50', GITHUB_RUN_ATTEMPT='3')
+        self.args = ['--publish', '--run-id', '10', '--run-attempt', '2', '--artifact-id', '90',
+                     '--sha', 'b' * 40, '--branch', 'dev']
+
+    def run_cli(self, *, stale=False, run_change=None, artifact_change=None, args=None):
+        _, server = self.fixture.server()
+        if stale: server.tip = 'd' * 40
+        original = server.open
+        requests = []
+        boundary, files = self.boundary, self.fixture.new
+        class Response:
+            def __init__(self, data): self.data = data
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, maximum): return self.data[:maximum]
+        def routed(request, timeout):
+            requests.append((request.get_method(), request.full_url))
+            path = urllib.parse.urlsplit(request.full_url).path
+            if path.endswith('/actions/runs/10/attempts/2'):
+                return Response(json.dumps(boundary.run | (run_change or {})).encode())
+            if path.endswith('/actions/artifacts/90'):
+                return Response(json.dumps(boundary.artifact | (artifact_change or {})).encode())
+            if path.endswith('/actions/artifacts/90/zip'):
+                return Response(archive(files))
+            return original(request, timeout)
+        server.open = routed
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(self.publisher, 'preflight'), \
+             mock.patch('urllib.request.build_opener', return_value=server), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            result = self.publisher.main(self.args if args is None else args)
+        self.assertNotIn('CANARY', output.getvalue())
+        return result, server, requests
+
+    def test_actual_publish_cli_uploads_ten_immutable_assets_and_stages_latest_with_recovery(self):
+        result, server, _ = self.run_cli()
+        self.assertEqual(result, 0)
+        immutable = next(r for r in server.releases.values() if r['tag_name'] == 'dev-' + 'b' * 40)
+        self.assertEqual(server.files[immutable['id']], self.fixture.new)
+        self.assertEqual(len(server.files[immutable['id']]), 10)
+        self.assertEqual(server.files[server.latest()['id']], self.fixture.new)
+        self.assertEqual(server.files[1], self.fixture.old)
+        self.assertTrue(immutable['prerelease'])
+        self.assertFalse(immutable['draft'])
+        stage = json.loads(server.latest()['body'])
+        self.assertEqual(stage['stage_tag'], 'dev-stage-50-3-' + 'b' * 40)
+
+    def test_stale_or_wrong_authoritative_receipt_causes_zero_transport_writes(self):
+        cases = [dict(stale=True), dict(run_change={'workflow_id': 8}), dict(run_change={'run_attempt': 1}),
+                 dict(run_change={'head_repository': {'id': 9}}), dict(artifact_change={'expired': True}),
+                 dict(artifact_change={'workflow_run': {'id': 10, 'head_sha': 'e' * 40}})]
+        for case in cases:
+            with self.subTest(case=case):
+                result, server, requests = self.run_cli(**case)
+                self.assertEqual(result, 1)
+                self.assertEqual(server.operations, [])
+                self.assertTrue(all(method == 'GET' for method, _ in requests))
+                self.assertEqual(server.files[1], self.fixture.old)
+
+    def test_default_and_explicit_validation_have_get_only_transport(self):
+        for args in [self.args[1:], ['--validate-only'] + self.args[1:]]:
+            with self.subTest(args=args):
+                result, server, requests = self.run_cli(args=args)
+                self.assertEqual(result, 0)
+                self.assertEqual(server.operations, [])
+                self.assertTrue(all(method == 'GET' for method, _ in requests))
+
+    def test_mutually_exclusive_cli_modes_fail_before_any_transport_write(self):
+        for args in [self.args + ['--validate-only'], self.args + ['--recover-stage-id', '2'],
+                     ['--validate-only', '--recover-stage-id', '2'], ['--recover-stage-id', '2', '--run-id', '10']]:
+            with self.subTest(args=args):
+                result, server, requests = self.run_cli(args=args)
+                self.assertEqual(result, 1)
+                self.assertEqual(server.operations, [])
+                self.assertEqual(requests, [])
+
+
+class RecipePrecredentialIntegrationTests(unittest.TestCase):
+    """Execute actual recipe preflight with its declared environment, no credentials."""
+    def setUp(self):
+        import yaml
+        self.root = pathlib.Path(__file__).resolve().parents[1]
+        self.recipe = yaml.load((self.root / '.github/workflows/dc-exporter-publish.yml').read_text(), Loader=yaml.BaseLoader)
+        self.caller = yaml.load((self.root / '.github/workflows/publish.yml').read_text(), Loader=yaml.BaseLoader)
+
+    def preflight(self, mode, *, changes=None, workflow_id='7', operation_env_control=False):
+        import re
+        import subprocess
+        import sys
+        job = self.recipe['jobs'][mode]
+        step_index = next(i for i, step in enumerate(job['steps']) if 'pool-publish.sh preflight' in step.get('run', ''))
+        step = job['steps'][step_index]
+        inputs = dict(mode=mode, run_id='10', run_attempt='2', artifact_id='90', sha=SHA,
+                      branch='dev', recover_stage_id='')
+        if mode == 'recover':
+            inputs.update(run_id='', run_attempt='', artifact_id='', sha='', branch='', recover_stage_id='25')
+        inputs.update(changes or {})
+        contexts = {'github.event.repository.default_branch': 'main',
+                    'vars.DC_EXPORTER_SOURCE_WORKFLOW_ID': workflow_id,
+                    **{'inputs.' + key: value for key, value in inputs.items()}}
+        # These are GitHub's standard shell variables only. Custom environment
+        # comes exclusively from the parsed workflow step(s) below.
+        env = dict(PATH=os.environ['PATH'], GITHUB_REPOSITORY='cryptolabsza/dc-exporter-releases',
+                   GITHUB_REPOSITORY_ID='1141480624', GITHUB_EVENT_NAME='workflow_dispatch',
+                   GITHUB_REF='refs/heads/main', GITHUB_REF_PROTECTED='true',
+                   GITHUB_WORKFLOW_REF='cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main',
+                   GITHUB_SHA='c' * 40, GITHUB_RUN_ID='50', GITHUB_RUN_ATTEMPT='3')
+        declarations = dict(step.get('env', {}))
+        if operation_env_control:
+            # Isolate ADV-002 from ADV-001 using actual operation-step receipt
+            # declarations; credential declarations are deliberately excluded.
+            operation = next(value for value in job['steps'] if value.get('run') == 'bash scripts/ci/pool-publish.sh ' + mode)
+            declarations = {key: value for key, value in operation['env'].items()
+                            if key not in {'SOURCE_READER_TOKEN', 'GITHUB_TOKEN'}} | declarations
+            # The caller already declares the selected mode as a fixed value.
+            declarations.setdefault('INPUT_MODE', self.caller['jobs'][mode]['with']['mode'])
+        for name, expression in declarations.items():
+            self.assertNotIn(name, {'SOURCE_READER_TOKEN', 'GITHUB_TOKEN'}, 'preflight must have no credential environment')
+            match = re.fullmatch(r'\$\{\{\s*([^}]+?)\s*\}\}', expression)
+            env[name] = contexts[match[1]] if match else expression
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp)
+            capture = path / 'capture.json'
+            docker = path / 'docker'
+            docker.write_text('#!' + sys.executable + '\nimport json,os,sys\n' +
+                              'json.dump({"argv":sys.argv[1:],"env_names":sorted(os.environ)},open(os.environ["CAPTURE"],"w"))\n')
+            docker.chmod(0o755)
+            env['PATH'] = str(path) + os.pathsep + env['PATH']
+            env['CAPTURE'] = str(capture)
+            result = subprocess.run(['bash', '-c', step['run']], cwd=self.root, env=env,
+                                    capture_output=True, text=True, timeout=5)
+            captured = json.loads(capture.read_text()) if capture.exists() else None
+        # A normal Actions run stops at failed preflight; it cannot reach the
+        # following actual App mint step. No token action is invoked in tests.
+        mint_after = any('create-github-app-token@' in value.get('uses', '') for value in job['steps'][step_index + 1:])
+        reached_mint = result.returncode == 0 and mint_after
+        return result, captured, reached_mint
+
+    def test_actual_recipe_preflight_all_three_modes_reach_networkless_container_without_credentials(self):
+        for mode in ['validate', 'publish', 'recover']:
+            with self.subTest(mode=mode):
+                result, captured, _ = self.preflight(mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNotNone(captured)
+                args = captured['argv']
+                self.assertEqual(args[args.index('--network') + 1], 'none')
+                self.assertEqual(args[args.index('scripts/ci/publish.py') + 1:], ['--preflight'])
+                self.assertNotIn('SOURCE_READER_TOKEN', captured['env_names'])
+                self.assertNotIn('GITHUB_TOKEN', captured['env_names'])
+
+    def test_malformed_source_receipts_and_config_fail_preflight_before_container_or_app_mint(self):
+        cases = [({'mode': 'unknown'}, '7'), ({'run_id': 'garbage'}, '7'), ({'run_attempt': '0'}, '7'),
+                 ({'artifact_id': '-1'}, '7'), ({'sha': 'bad-sha'}, '7'),
+                 ({'branch': 'untrusted'}, '7'), ({'recover_stage_id': '25'}, '7'),
+                 ({}, ''), ({}, 'not-a-workflow')]
+        for mode in ['validate', 'publish']:
+            for changes, workflow_id in cases:
+                with self.subTest(mode=mode, changes=changes, workflow_id=workflow_id):
+                    result, captured, reached_mint = self.preflight(mode, changes=changes, workflow_id=workflow_id,
+                                                                   operation_env_control=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIsNone(captured)
+                    self.assertFalse(reached_mint)
+
+    def test_recovery_preflight_rejects_bad_stage_and_recipe_blocks_source_conflicts_without_source_configuration(self):
+        for changes in [{'recover_stage_id': 'garbage'}, {'recover_stage_id': '0'}]:
+            with self.subTest(changes=changes):
+                result, captured, reached_mint = self.preflight('recover', changes=changes, workflow_id='', operation_env_control=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIsNone(captured)
+                self.assertFalse(reached_mint)
+        recovery = dict(mode='recover', run_id='', run_attempt='', artifact_id='', sha='', branch='', recover_stage_id='25')
+        selector = ProtectedActivationWorkflowTests()
+        for key, value in [('run_id', '10'), ('run_attempt', '2'), ('artifact_id', '90'), ('sha', SHA), ('branch', 'dev')]:
+            for workflow in [self.caller, self.recipe]:
+                with self.subTest(field=key):
+                    self.assertEqual(selector.selected_jobs(workflow, recovery | {key: value}), [])

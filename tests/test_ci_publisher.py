@@ -499,17 +499,17 @@ class LatestHTTPTransitionTests(unittest.TestCase):
         path = pathlib.Path(supplied) if supplied else pathlib.Path(__file__).resolve().parents[1] / '.github/workflows/publish.yml'
         if not path.exists():
             self.skipTest('Publisher workflow is tested in its separate trusted repository')
-        text = path.read_text()
-        # This preparation intentionally exposes no writable recovery job.
-        # The helper recovery transport remains tested independently above.
-        recipe = path.with_name('dc-exporter-publish.yml').read_text()
-        self.assertNotIn('recover_stage_id:', text)
-        self.assertNotIn('contents: write', text + recipe)
-        self.assertLess(recipe.index('Preflight publisher before providing reader credentials'),
-                        recipe.index('Mint dedicated source-reader installation token'))
-        self.assertIn('repositories: dc-exporter-rs-public', recipe)
-        self.assertIn('permission-actions: read', recipe)
-        self.assertIn('permission-contents: read', recipe)
+        import yaml
+        recipe = yaml.load(path.with_name('dc-exporter-publish.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertIn('recover', recipe['jobs'], 'actual recipe exposes no target-only recovery job')
+        recovery = recipe['jobs']['recover']
+        self.assertEqual(recovery['permissions'], {'contents': 'write'})
+        encoded = json.dumps(recovery['steps'])
+        for forbidden in ['create-github-app-token', 'SOURCE_READER', 'SOURCE_WORKFLOW_ID',
+                          'inputs.run_id', 'inputs.run_attempt', 'inputs.artifact_id', 'inputs.sha', 'inputs.branch']:
+            self.assertNotIn(forbidden, encoded)
+        self.assertIn('pool-publish.sh recover', encoded)
+        self.assertEqual(recipe['on']['workflow_call']['secrets']['DC_EXPORTER_SOURCE_READER_APP_KEY']['required'], 'false')
 
 
 

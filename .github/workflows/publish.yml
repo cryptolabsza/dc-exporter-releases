@@ -1,33 +1,45 @@
-# TRACEWEAVER: file-role=protected-readonly-publisher-caller; req=REQ-PUB-004; trace=TRACE-PUB-004; ver=VER-PUB-004
-name: Validate reviewed exporter artifact
+# TRACEWEAVER: file-role=protected-publisher-caller; req=REQ-PUB-004; trace=TRACE-PUB-004; ver=VER-PUB-004
+name: Protected exporter artifact publisher
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Validate only by default; writes require separate exact owner approval
+        required: true
+        type: choice
+        default: validate
+        options:
+        - validate
+        - publish
+        - recover
       run_id:
         description: Successful source CI run ID
-        required: true
+        required: false
         type: string
       run_attempt:
         description: Exact successful source run attempt
-        required: true
+        required: false
         type: string
       artifact_id:
         description: Exact artifact ID from that source run
-        required: true
+        required: false
         type: string
       sha:
         description: Exact 40-character source commit SHA
-        required: true
+        required: false
         type: string
       branch:
-        description: Protected source branch
-        required: true
-        type: choice
-        options: [dev, main]
+        description: 'Source branch: dev or main; leave empty for recovery'
+        required: false
+        type: string
+      recover_stage_id:
+        description: Recorded target release stage ID; recovery only
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
-  group: dc-exporter-validation
+  group: dc-exporter-release-channel
   cancel-in-progress: false
 jobs:
   validate:
@@ -35,12 +47,15 @@ jobs:
       github.repository == 'cryptolabsza/dc-exporter-releases' &&
       github.repository_id == '1141480624' &&
       github.event_name == 'workflow_dispatch' &&
+      github.event.repository.default_branch == 'main' &&
       github.ref == 'refs/heads/main' && github.ref_protected &&
-      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main'
-    # PREPARATION PLACEHOLDER: root replaces this with reviewed recipe H1 SHA.
-    # Recipe runs --validate-only in ci-publish-ephemeral; no writable job exists.
+      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
+      inputs.mode == 'validate' &&
+      inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
+      == ''
     uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@b9b0174975acfb6980814d41c6e72e838b0d75ba
     with:
+      mode: validate
       run_id: ${{ inputs.run_id }}
       run_attempt: ${{ inputs.run_attempt }}
       artifact_id: ${{ inputs.artifact_id }}
@@ -48,3 +63,45 @@ jobs:
       branch: ${{ inputs.branch }}
     secrets:
       DC_EXPORTER_SOURCE_READER_APP_KEY: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
+    permissions:
+      contents: read
+  publish:
+    if: >-
+      github.repository == 'cryptolabsza/dc-exporter-releases' &&
+      github.repository_id == '1141480624' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
+      inputs.mode == 'publish' &&
+      inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
+      == '' && inputs.branch == 'dev'
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@b9b0174975acfb6980814d41c6e72e838b0d75ba
+    with:
+      mode: publish
+      run_id: ${{ inputs.run_id }}
+      run_attempt: ${{ inputs.run_attempt }}
+      artifact_id: ${{ inputs.artifact_id }}
+      sha: ${{ inputs.sha }}
+      branch: ${{ inputs.branch }}
+    secrets:
+      DC_EXPORTER_SOURCE_READER_APP_KEY: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
+    permissions:
+      contents: write
+  recover:
+    if: >-
+      github.repository == 'cryptolabsza/dc-exporter-releases' &&
+      github.repository_id == '1141480624' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
+      inputs.mode == 'recover' &&
+      inputs.run_id == '' && inputs.run_attempt == '' && inputs.artifact_id == '' && inputs.sha == '' && inputs.branch == '' && inputs.recover_stage_id
+      != ''
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@b9b0174975acfb6980814d41c6e72e838b0d75ba
+    with:
+      mode: recover
+      recover_stage_id: ${{ inputs.recover_stage_id }}
+    permissions:
+      contents: write

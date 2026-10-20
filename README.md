@@ -74,17 +74,58 @@ Project and third-party license notices must accompany each new binary/package
 release. Historical assets keep their original provenance and are identified
 separately from new-source builds.
 
-## Publisher preparation status
+## Protected publisher workflow
 
-The prepared manual workflow validates the exact source run and archive with a
-read-only release-repository token. It creates, changes and deletes no release
-assets. The reusable recipe pin must be replaced with its reviewed immutable
-commit before runner admission and rehearsal.
+Manual dispatch defaults to `mode=validate`. Validation uses a read-only release
+repository token and checks the exact protected source run, attempt, artifact,
+commit and branch without changing release assets. Supply `run_id`,
+`run_attempt`, `artifact_id`, `sha` and `branch` (`dev` or `main`). Leave
+`recover_stage_id` empty.
 
-The trusted helper retains explicit `--publish` and `--recover-stage-id` routes.
-They require a separately approved protected writable workflow; this prepared
-workflow cannot invoke them. Recovery uses only the release repository token and
-recorded stage receipts, so an unavailable source-reader App does not prevent
-restoration of the complete previous release. Historical assets and their
-original metadata/provenance remain preserved. Writable activation, public asset
-replacement and stable RTX 5090 promotion remain held for owner review.
+`mode=publish` is an explicit development publication request. Supply the same
+exact source receipt with `branch=dev`; the protected job alone receives release
+repository `contents: write`. The unchanged trusted helper verifies all ten
+archive entries, uploads the immutable `dev-<source SHA>` set without clobbering
+existing bytes, then stages the `dev-latest` replacement with recorded recovery
+receipts. The previous complete release and its original metadata remain
+available. Downloaded artifact content is never executed.
+
+`mode=recover` requires only the recorded target release `recover_stage_id`.
+Leave every source receipt field, including `branch`, empty. This separate job
+receives only the release repository writer token: it neither mints a
+source-reader App token nor requires source workflow configuration or source
+network access. Recovery verifies the recorded stage and restores a complete
+asset set after an interrupted replacement. Mixed source/recovery inputs fail
+closed before the workflow provides credentials.
+
+All modes require this repository's exact identity, protected `main`, default
+branch `main`, manual dispatch and the protected caller workflow. Source-reading
+jobs mint a dedicated App token limited to `dc-exporter-rs-public` with Actions
+and contents read permissions. The bounded nonroot publisher container forwards
+credentials by environment name and retains its resource limits and read-only
+mounts. Stable publication remains disabled (`HARDWARE_ACCEPTED=False`).
+
+The caller currently retains the existing immutable recipe pin during local
+preparation. Before admission or execution, the owner must bind it to the exact
+reviewed recipe commit and approve the concrete cutover. Writable workflow
+execution and exact public assets remain subject to separate owner approval;
+local tests do not establish runtime or hardware acceptance.
+
+Before container preflight or source-reader token minting, each recipe supplies
+the actual default branch, selected mode and applicable receipt/configuration
+through explicit credential-free environment mappings. The launcher validates
+that same input family and syntax again before the final operation. Recovery
+preflight receives only target identity, mode and stage ID.
+
+## Offline publisher checks
+
+Tests use Python 3 and the test-only PyYAML dependency (verified locally with
+PyYAML 6.0.3); the publisher runtime requires only the Python standard library.
+The launcher tests substitute an inert argument capture executable for Docker.
+Transport tests use opaque fixture bytes and a synthetic GitHub transport.
+They perform no network requests, container launches or artifact execution.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+bash -n scripts/ci/pool-publish.sh
+```
