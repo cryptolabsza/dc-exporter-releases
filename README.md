@@ -88,7 +88,7 @@ commit and branch without changing release assets. Supply `run_id`,
 
 `mode=publish` is an explicit development publication request. Supply the same
 exact source receipt with `branch=dev`; the protected job alone receives release
-repository `contents: write`. The unchanged trusted helper verifies all ten
+repository `contents: write`. The trusted helper verifies all ten
 archive entries, uploads the immutable `dev-<source SHA>` set without clobbering
 existing bytes, then stages the `dev-latest` replacement with recorded recovery
 receipts. The previous complete release and its original metadata remain
@@ -109,13 +109,10 @@ and contents read permissions. The bounded nonroot publisher container forwards
 credentials by environment name and retains its resource limits and read-only
 mounts. Stable publication remains disabled (`HARDWARE_ACCEPTED=False`).
 
-During this local permission-split preparation, both recipe paths retain the
-existing real immutable pin. The new validation file does not exist at that old
-commit, so the caller is held from execution until the owner binds both paths to
-the new reviewed recipe commit. Before admission or execution, the owner must bind it to the exact
-reviewed recipe commit and approve the concrete cutover. Writable workflow
-execution and exact public assets remain subject to separate owner approval;
-local tests do not establish runtime or hardware acceptance.
+Both recipe paths are pinned to reviewed commit
+`957ccad33686720b7f1a6a0776af6974b776c9b7`. Read-only validation uses its
+separate recipe; publishing and recovery use explicit modes in the writer
+recipe. Runtime validation does not establish hardware qualification.
 
 Before container preflight or source-reader token minting, each recipe supplies
 the actual default branch, selected mode and applicable receipt/configuration
