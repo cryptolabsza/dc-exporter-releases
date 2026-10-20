@@ -1,0 +1,207 @@
+# TRACEWEAVER: file-role=protected-shared-publisher-recipe; req=REQ-PUB-004; trace=TRACE-PUB-004; ver=VER-PUB-004
+name: Trusted exporter publisher recipe
+# Default validate launches the helper with --validate-only.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        required: false
+        type: string
+        default: validate
+      run_id:
+        required: false
+        type: string
+      run_attempt:
+        required: false
+        type: string
+      artifact_id:
+        required: false
+        type: string
+      sha:
+        required: false
+        type: string
+      branch:
+        required: false
+        type: string
+      recover_stage_id:
+        required: false
+        type: string
+    secrets:
+      DC_EXPORTER_SOURCE_READER_APP_KEY:
+        required: false
+permissions:
+  contents: read
+jobs:
+  validate:
+    if: >-
+      github.repository == 'cryptolabsza/dc-exporter-releases' &&
+      github.repository_id == '1141480624' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
+      inputs.mode == 'validate' &&
+      inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
+      == ''
+    runs-on:
+      group: ci-publish-ephemeral
+      labels: ci-linux-publish-v1-r1141480624
+    timeout-minutes: 15
+    steps:
+    - name: Checkout protected publisher code only
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+        path: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Pull pinned trusted runtime
+      shell: bash
+      run: docker pull rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0
+    - name: Preflight publisher before providing credentials
+      working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+      shell: bash
+      env:
+        GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_RECOVER_STAGE_ID: ${{ inputs.recover_stage_id }}
+        SOURCE_WORKFLOW_ID: ${{ vars.DC_EXPORTER_SOURCE_WORKFLOW_ID }}
+        INPUT_RUN_ID: ${{ inputs.run_id }}
+        INPUT_RUN_ATTEMPT: ${{ inputs.run_attempt }}
+        INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+      run: bash scripts/ci/pool-publish.sh preflight
+    - name: Mint dedicated source-reader installation token
+      id: reader
+      uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42
+      with:
+        app-id: ${{ vars.DC_EXPORTER_SOURCE_READER_APP_ID }}
+        private-key: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
+        owner: cryptolabsza
+        repositories: dc-exporter-rs-public
+        permission-actions: read
+        permission-contents: read
+    - name: Validate receipts and bytes without release writes
+      working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        SOURCE_READER_TOKEN: ${{ steps.reader.outputs.token }}
+        SOURCE_WORKFLOW_ID: ${{ vars.DC_EXPORTER_SOURCE_WORKFLOW_ID }}
+        INPUT_RUN_ID: ${{ inputs.run_id }}
+        INPUT_RUN_ATTEMPT: ${{ inputs.run_attempt }}
+        INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+      run: bash scripts/ci/pool-publish.sh validate
+    permissions:
+      contents: read
+  publish:
+    if: >-
+      github.repository == 'cryptolabsza/dc-exporter-releases' &&
+      github.repository_id == '1141480624' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
+      inputs.mode == 'publish' &&
+      inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
+      == '' && inputs.branch == 'dev'
+    runs-on:
+      group: ci-publish-ephemeral
+      labels: ci-linux-publish-v1-r1141480624
+    timeout-minutes: 15
+    steps:
+    - name: Checkout protected publisher code only
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+        path: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Pull pinned trusted runtime
+      shell: bash
+      run: docker pull rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0
+    - name: Preflight publisher before providing credentials
+      working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+      shell: bash
+      env:
+        GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_RECOVER_STAGE_ID: ${{ inputs.recover_stage_id }}
+        SOURCE_WORKFLOW_ID: ${{ vars.DC_EXPORTER_SOURCE_WORKFLOW_ID }}
+        INPUT_RUN_ID: ${{ inputs.run_id }}
+        INPUT_RUN_ATTEMPT: ${{ inputs.run_attempt }}
+        INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+      run: bash scripts/ci/pool-publish.sh preflight
+    - name: Mint dedicated source-reader installation token
+      id: reader
+      uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42
+      with:
+        app-id: ${{ vars.DC_EXPORTER_SOURCE_READER_APP_ID }}
+        private-key: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
+        owner: cryptolabsza
+        repositories: dc-exporter-rs-public
+        permission-actions: read
+        permission-contents: read
+    - name: Publish exact reviewed dev assets
+      working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        SOURCE_READER_TOKEN: ${{ steps.reader.outputs.token }}
+        SOURCE_WORKFLOW_ID: ${{ vars.DC_EXPORTER_SOURCE_WORKFLOW_ID }}
+        INPUT_RUN_ID: ${{ inputs.run_id }}
+        INPUT_RUN_ATTEMPT: ${{ inputs.run_attempt }}
+        INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+      run: bash scripts/ci/pool-publish.sh publish
+    permissions:
+      contents: write
+  recover:
+    if: >-
+      github.repository == 'cryptolabsza/dc-exporter-releases' &&
+      github.repository_id == '1141480624' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
+      inputs.mode == 'recover' &&
+      inputs.run_id == '' && inputs.run_attempt == '' && inputs.artifact_id == '' && inputs.sha == '' && inputs.branch == '' && inputs.recover_stage_id
+      != ''
+    runs-on:
+      group: ci-publish-ephemeral
+      labels: ci-linux-publish-v1-r1141480624
+    timeout-minutes: 15
+    steps:
+    - name: Checkout protected publisher code only
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+        path: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Pull pinned trusted runtime
+      shell: bash
+      run: docker pull rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0
+    - name: Preflight publisher before providing credentials
+      working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+      shell: bash
+      env:
+        GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_RECOVER_STAGE_ID: ${{ inputs.recover_stage_id }}
+      run: bash scripts/ci/pool-publish.sh preflight
+    - name: Recover complete target release from recorded stage
+      working-directory: publisher-${{ github.run_id }}-${{ github.run_attempt }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        INPUT_RECOVER_STAGE_ID: ${{ inputs.recover_stage_id }}
+      run: bash scripts/ci/pool-publish.sh recover
+    permissions:
+      contents: write

@@ -77,17 +77,37 @@ def json_object(pairs):
 
 
 def allowed_files(version):
-    return {'dc-exporter-rs', 'BUILD_INFO.txt', 'SHA256SUMS', 'manifest.json', 'dc-exporter-rs_amd64.deb', f'dc-exporter-rs_{version}_amd64.deb'}
+    return {'dc-exporter-rs', 'BUILD_INFO.txt', 'SHA256SUMS', 'manifest.json',
+            'VERSION.txt', 'HELP.txt', 'SYMBOLS.txt', 'THIRD-PARTY-NOTICES.md',
+            'dc-exporter-rs_amd64.deb', f'dc-exporter-rs_{version}_amd64.deb'}
+
+
+def validate_checksums(files):
+    rows = files['SHA256SUMS'].decode('ascii').splitlines()
+    expected = set(files) - {'SHA256SUMS', 'manifest.json'}
+    require(len(rows) == len(expected))
+    seen = set()
+    for row in rows:
+        match = re.fullmatch(r'([0-9a-f]{64})  ([A-Za-z0-9_.-]+)', row)
+        require(match is not None)
+        digest, name = match.groups()
+        require(name in expected and name not in seen and digest == hashlib.sha256(files[name]).hexdigest())
+        seen.add(name)
+    require(seen == expected)
 
 
 def validate_archive(data, expected, *, max_total=MAX_TOTAL):
+    return _validate_archive(data, expected, max_total=max_total, previous=False)
+
+
+def _validate_archive(data, expected, *, max_total=MAX_TOTAL, previous=False):
     validate_source(expected)
     require(isinstance(data, bytes) and 0 < len(data) <= max_total)
     files = {}
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             entries = archive.infolist()
-            require(4 <= len(entries) <= 6)
+            require(4 <= len(entries) <= 6 if previous else len(entries) == 10)
             total = 0
             for entry in entries:
                 name = entry.filename
@@ -106,8 +126,12 @@ def validate_archive(data, expected, *, max_total=MAX_TOTAL):
         require(type(manifest['schema']) is int and manifest['schema'] == 1 and manifest['source'] == expected)
         version = manifest['cargo_version']
         require(isinstance(version, str) and VERSION.fullmatch(version) is not None and version == manifest['binary_version'])
-        require(set(files).issubset(allowed_files(version)) and {'dc-exporter-rs', 'BUILD_INFO.txt', 'SHA256SUMS', 'manifest.json'}.issubset(files))
-        package_names = allowed_files(version) - {'dc-exporter-rs', 'BUILD_INFO.txt', 'SHA256SUMS', 'manifest.json'}
+        required = {'dc-exporter-rs', 'BUILD_INFO.txt', 'SHA256SUMS', 'manifest.json'}
+        package_names = {'dc-exporter-rs_amd64.deb', f'dc-exporter-rs_{version}_amd64.deb'}
+        if previous:
+            require(required.issubset(files) and set(files).issubset(required | package_names))
+        else:
+            require(set(files) == allowed_files(version))
         require(not package_names.intersection(files) or package_names.issubset(files))
         hashes = manifest['files']
         require(isinstance(hashes, dict) and set(hashes) == set(files) - {'manifest.json'})
@@ -117,6 +141,9 @@ def validate_archive(data, expected, *, max_total=MAX_TOTAL):
             require(metadata['sha256'] == hashlib.sha256(files[name]).hexdigest())
         if package_names.issubset(files):
             require(files['dc-exporter-rs_amd64.deb'] == files[f'dc-exporter-rs_{version}_amd64.deb'])
+        if not previous:
+            require(files['VERSION.txt'] == f'dc-exporter {version}\n'.encode())
+            validate_checksums(files)
         return files, manifest
     except (zipfile.BadZipFile, KeyError, TypeError, UnicodeError, json.JSONDecodeError, RuntimeError) as error:
         raise ValueError('Publisher archive validation failed') from error
@@ -158,6 +185,17 @@ def validate_runtime(*, uid, euid, groups, devices, sockets, sudo, capabilities,
     require(pids.isdecimal() and 0 < int(pids) <= 128 and 0 < cpu <= 2)
 
 
+def effective_cpu(cpus, quotas):
+    require(type(cpus) is int and cpus > 0 and quotas)
+    limits = [cpus]
+    for value in quotas:
+        match = re.fullmatch(r'(max|[1-9][0-9]*) ([1-9][0-9]*)', value)
+        require(match is not None)
+        if match[1] != 'max':
+            limits.append(int(match[1]) / int(match[2]))
+    return min(limits)
+
+
 def preflight():
     require(sys.platform == 'linux')
     status = Path('/proc/self/status').read_text()
@@ -174,7 +212,10 @@ def preflight():
     root = Path('/sys/fs/cgroup')
     current = root / roots[0].lstrip('/')
     bounds = {'memory.max': [], 'pids.max': []}
+    quotas = []
     while True:
+        if (current / 'cpu.max').exists():
+            quotas.append((current / 'cpu.max').read_text().strip())
         for name, values in bounds.items():
             value = 'max' if current == root and not (current / name).exists() else (current / name).read_text().strip()
             require(value == 'max' or value.isdecimal() and int(value) > 0)
@@ -184,7 +225,7 @@ def preflight():
             break
         current = current.parent
     require(all(bounds.values()))
-    validate_runtime(uid=os.getuid(), euid=os.geteuid(), groups=groups, devices=devices, sockets=sockets, sudo=shutil.which('sudo') is not None, capabilities=capabilities, memory=str(min(bounds['memory.max'])), pids=str(min(bounds['pids.max'])), cpu=os.cpu_count() or 999)
+    validate_runtime(uid=os.getuid(), euid=os.geteuid(), groups=groups, devices=devices, sockets=sockets, sudo=shutil.which('sudo') is not None, capabilities=capabilities, memory=str(min(bounds['memory.max'])), pids=str(min(bounds['pids.max'])), cpu=effective_cpu(os.cpu_count() or 999, quotas))
 
 
 class PublicParser(argparse.ArgumentParser):
@@ -204,7 +245,8 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class GithubAPI:
-    def __init__(self, *, target_only=False):
+    def __init__(self, *, target_only=False, read_only=True):
+        self.read_only = read_only
         self.reader = None if target_only else os.environ['SOURCE_READER_TOKEN']
         self.writer = os.environ['GITHUB_TOKEN']
         require(bool(self.writer) and (target_only or bool(self.reader)))
@@ -217,6 +259,8 @@ class GithubAPI:
         require(target.get('id') == RELEASE_REPOSITORY_ID and target.get('full_name') == RELEASE_REPOSITORY)
 
     def request(self, method, path, *, source=False, payload=None, raw=False, upload=False):
+        require(method == 'GET' or not self.read_only)
+        require(not source or method == 'GET')
         repository = SOURCE_REPOSITORY if source else RELEASE_REPOSITORY
         require(path.startswith(f'/repos/{repository}/') or path == f'/repos/{repository}')
         if method in {'POST', 'PATCH', 'DELETE'} and self.latest_expected_sha is not None:
@@ -333,19 +377,26 @@ class GithubAPI:
         raise ValueError('Stage discovery bound exceeded')
 
     def verify_previous(self, files):
-        base = {'dc-exporter-rs', 'BUILD_INFO.txt', 'SHA256SUMS'}
-        require(base.issubset(files) and len(files) <= 6)
+        # Previous snapshots preserve authenticated target bytes and provenance.
+        # They are never admitted as fresh public-source artifacts.
+        require(isinstance(files, dict) and all(isinstance(data, bytes) and 0 < len(data) <= MAX_FILE for data in files.values()))
+        require(sum(map(len, files.values())) <= MAX_TOTAL)
         if 'manifest.json' in files:
+            require(len(files) in {4, 6, 10})
             source = json.loads(files['manifest.json'], object_pairs_hook=json_object)['source']
             stream = io.BytesIO()
             with zipfile.ZipFile(stream, 'w') as archive:
                 for name, data in files.items():
                     archive.writestr(name, data)
-            validate_archive(stream.getvalue(), source)
+            _validate_archive(stream.getvalue(), source, previous=len(files) != 10)
         else:
-            # First migration preserves existing legacy bytes/metadata without
-            # fabricating source identity. Only the known old latest names pass.
-            require(set(files) == base)
+            # Exact historical target sets: oldest binary-only tags, old dev
+            # three-file channel, and stable binary+two DEBs+checksum set.
+            # Do not synthesize a manifest or rewrite old checksum/build info.
+            names = set(files)
+            known = [ {'dc-exporter-rs'}, {'dc-exporter-rs', 'BUILD_INFO.txt', 'SHA256SUMS'} ]
+            packages = {name for name in names if re.fullmatch(r'dc-exporter-rs_\d+\.\d+\.\d+_amd64\.deb', name)}
+            require(names in known or len(packages) == 1 and names == {'dc-exporter-rs', 'dc-exporter-rs_amd64.deb', 'SHA256SUMS'} | packages)
 
     def stage_recipe(self, stage):
         require(positive(stage['id']) and stage['prerelease'] is True and isinstance(stage['draft'], bool))
@@ -387,7 +438,9 @@ class GithubAPI:
                 return
             old = self.release_id(previous['id'])
             require(old['tag_name'] in {'dev-latest', previous['tag']} and old['draft'] is False)
-            require(self.file_receipt(self.release_files(old)) == previous['files'])
+            old_files = self.release_files(old)
+            self.verify_previous(old_files)
+            require(self.file_receipt(old_files) == previous['files'])
             if latest is not None and latest['id'] == stage_id:
                 require(self.file_receipt(self.release_files(stage)) == recipe['files'])
                 require(self.find_stage(recipe['stage_tag']) is None)
@@ -464,6 +517,8 @@ class GithubAPI:
 def main(argv=None, *, api=None):
     parser = PublicParser()
     parser.add_argument('--preflight', action='store_true')
+    parser.add_argument('--validate-only', action='store_true')
+    parser.add_argument('--publish', action='store_true')
     parser.add_argument('--recover-stage-id', type=int)
     parser.add_argument('--run-id', type=int)
     parser.add_argument('--run-attempt', type=int)
@@ -473,7 +528,9 @@ def main(argv=None, *, api=None):
     parser.add_argument('--tag', default='')
     try:
         args = parser.parse_args(argv)
+        require(not (args.validate_only and args.publish))
         if args.preflight:
+            require(not args.validate_only and not args.publish)
             require(all(value is None for value in [args.run_id, args.run_attempt, args.artifact_id, args.sha, args.branch, args.recover_stage_id]) and not args.tag)
             preflight()
             return 0
@@ -482,10 +539,11 @@ def main(argv=None, *, api=None):
         require(os.environ['GITHUB_REPOSITORY'] == RELEASE_REPOSITORY and os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch')
         require(os.environ['GITHUB_REF'] == 'refs/heads/' + default and os.environ['GITHUB_WORKFLOW_REF'] == f'{RELEASE_REPOSITORY}/.github/workflows/publish.yml@refs/heads/{default}')
         if args.recover_stage_id is not None:
+            require(not args.validate_only and not args.publish)
             require(positive(args.recover_stage_id) and all(value is None for value in [args.run_id, args.run_attempt, args.artifact_id, args.sha, args.branch]) and not args.tag)
             if api is None:
                 preflight()
-                api = GithubAPI(target_only=True)
+                api = GithubAPI(target_only=True, read_only=False)
             api.recover_stage(args.recover_stage_id)
             print('Publisher recovery verified a complete asset set')
             return 0
@@ -496,11 +554,16 @@ def main(argv=None, *, api=None):
         validate_source(source)
         if api is None:
             preflight()
-            api = GithubAPI()
+            api = GithubAPI(read_only=not args.publish)
         run = api.get_run(args.run_id, args.run_attempt)
         artifact = api.get_artifact(args.artifact_id)
         validate_receipt(run, artifact, expected=source, workflow_id=workflow_id, artifact_id=args.artifact_id, tip=api.tip(args.branch))
         files, manifest = validate_archive(api.download_artifact(args.artifact_id), source)
+        require(api.tip(args.branch) == args.sha)
+        if not args.publish:
+            require(not args.tag)
+            print('Publisher validated exact artifact bytes; no release writes requested')
+            return 0
         if args.branch == 'main':
             # Fail before tag/history API work and publication until acceptance.
             require(HARDWARE_ACCEPTED)
