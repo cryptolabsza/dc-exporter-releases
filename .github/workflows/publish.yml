@@ -53,7 +53,7 @@ jobs:
       inputs.mode == 'validate' &&
       inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
       == ''
-    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@4018e103c156eb3c4cb43504d770158d477d2ff7
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-validate.yml@4018e103c156eb3c4cb43504d770158d477d2ff7
     with:
       mode: validate
       run_id: ${{ inputs.run_id }}

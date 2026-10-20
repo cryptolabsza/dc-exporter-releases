@@ -243,7 +243,7 @@ class FormatTransitionRecoveryTests(baseline.LatestHTTPTransitionTests):
 class PreparationWorkflowContractTests(unittest.TestCase):
     def setUp(self):
         root = pathlib.Path(__file__).resolve().parents[1]
-        self.text = (root / '.github/workflows/publish.yml').read_text() + '\n' + (root / '.github/workflows/dc-exporter-publish.yml').read_text()
+        self.text = '\n'.join(path.read_text() for path in (root / '.github/workflows').glob('*.yml'))
 
     def test_default_preparation_has_read_only_contents_permission(self):
         import re
@@ -418,13 +418,23 @@ class ReadOnlyHTTPPreparationTests(unittest.TestCase):
         self.assertTrue(all(method == 'GET' for method, _ in requests))
 
 
+def called_recipe(root, caller, mode):
+    import re
+    import yaml
+    uses = caller['jobs'][mode]['uses']
+    match = re.fullmatch(r'cryptolabsza/dc-exporter-releases/(\.github/workflows/[^/@]+\.yml)@([0-9a-f]{40})', uses)
+    if match is None:
+        raise AssertionError('Caller must bind an immutable local recipe path')
+    return yaml.load((root / match[1]).read_text(), Loader=yaml.BaseLoader)
+
+
 class ProtectedActivationWorkflowTests(unittest.TestCase):
     """Inspect the parsed, actual Actions entrypoints, including job boundaries."""
     def setUp(self):
         import yaml
         self.root = pathlib.Path(__file__).resolve().parents[1]
         self.caller = yaml.load((self.root / '.github/workflows/publish.yml').read_text(), Loader=yaml.BaseLoader)
-        self.recipe = yaml.load((self.root / '.github/workflows/dc-exporter-publish.yml').read_text(), Loader=yaml.BaseLoader)
+        self.recipes = {mode: called_recipe(self.root, self.caller, mode) for mode in self.caller['jobs']}
 
     def test_dispatch_defaults_to_validation_and_recovery_has_no_required_source_input(self):
         inputs = self.caller['on']['workflow_dispatch']['inputs']
@@ -435,8 +445,8 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
         self.assertEqual(inputs['recover_stage_id']['required'], 'false')
         for key in ['run_id', 'run_attempt', 'artifact_id', 'sha', 'branch']:
             self.assertEqual(inputs[key]['required'], 'false', key)
-            self.assertEqual(self.recipe['on']['workflow_call']['inputs'][key]['required'], 'false', key)
-        self.assertEqual(self.recipe['on']['workflow_call']['inputs']['mode']['default'], 'validate')
+            self.assertEqual(self.recipes['validate']['on']['workflow_call']['inputs'][key]['required'], 'false', key)
+        self.assertEqual(self.recipes['validate']['on']['workflow_call']['inputs']['mode']['default'], 'validate')
 
     def selected_jobs(self, workflow, inputs, context=None):
         import ast
@@ -465,9 +475,10 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
         return selected
 
     def test_only_explicit_publish_and_recover_jobs_have_minimal_writer_permissions(self):
-        for workflow in [self.caller, self.recipe]:
+        for workflow in [self.caller, *self.recipes.values()]:
             self.assertEqual(workflow['permissions'], {'contents': 'read'})
-            self.assertEqual(set(workflow['jobs']), {'validate', 'publish', 'recover'})
+            if workflow is self.caller:
+                self.assertEqual(set(workflow['jobs']), {'validate', 'publish', 'recover'})
             for mode, job in workflow['jobs'].items():
                 self.assertEqual(job['permissions'], {'contents': 'read' if mode == 'validate' else 'write'})
                 self.assertIn("inputs.mode == '" + mode + "'", job['if'])
@@ -475,7 +486,7 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
                     self.assertIn("inputs.branch == 'dev'", job['if'])
                 if workflow is self.caller:
                     self.assertEqual(job['with']['mode'], mode)
-                    self.assertRegex(job['uses'], r'^cryptolabsza/dc-exporter-releases/\.github/workflows/dc-exporter-publish\.yml@[0-9a-f]{40}$')
+                    self.assertRegex(job['uses'], r'^cryptolabsza/dc-exporter-releases/\.github/workflows/dc-exporter-(?:validate|publish)\.yml@[0-9a-f]{40}$')
                     self.assertNotIn('inherit', json.dumps(job.get('secrets', {})))
             source = dict(mode='validate', run_id='10', run_attempt='2', artifact_id='90',
                           sha=SHA, branch='dev', recover_stage_id='')
@@ -485,7 +496,7 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
                                      (recovery, ['recover']), (source | {'mode': 'other'}, []),
                                      (source | {'mode': 'publish', 'branch': 'main'}, []),
                                      (source | {'recover_stage_id': '25'}, [])]:
-                self.assertEqual(self.selected_jobs(workflow, inputs), selected)
+                self.assertEqual(self.selected_jobs(workflow, inputs), [name for name in selected if name in workflow['jobs']])
             for key in ['run_id', 'run_attempt', 'artifact_id', 'sha', 'branch']:
                 self.assertEqual(self.selected_jobs(workflow, recovery | {key: source[key]}), [])
                 self.assertEqual(self.selected_jobs(workflow, source | {key: ''}), [])
@@ -495,8 +506,9 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
                                ('github.workflow_ref', 'wrong/workflow')]:
                 for inputs in [source, source | {'mode': 'publish'}, recovery]:
                     self.assertEqual(self.selected_jobs(workflow, inputs, {key: value}), [])
-            self.assertNotIn('secrets', workflow['jobs']['recover'])
-            self.assertEqual(set(workflow['jobs']['recover'].get('with', {})) - {'mode', 'recover_stage_id'}, set())
+            if 'recover' in workflow['jobs']:
+                self.assertNotIn('secrets', workflow['jobs']['recover'])
+                self.assertEqual(set(workflow['jobs']['recover'].get('with', {})) - {'mode', 'recover_stage_id'}, set())
 
     def test_every_job_requires_exact_repository_default_main_protection_and_manual_workflow(self):
         required = ["github.repository == 'cryptolabsza/dc-exporter-releases'",
@@ -504,18 +516,19 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
                     "github.ref == 'refs/heads/main'", 'github.ref_protected',
                     "github.event.repository.default_branch == 'main'",
                     "github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main'"]
-        for workflow in [self.caller, self.recipe]:
-            self.assertEqual(set(workflow['jobs']), {'validate', 'publish', 'recover'})
-            for mode in ['validate', 'publish', 'recover']:
+        for workflow in [self.caller, *self.recipes.values()]:
+            if workflow is self.caller:
+                self.assertEqual(set(workflow['jobs']), {'validate', 'publish', 'recover'})
+            for mode in workflow['jobs']:
                 for clause in required:
                     with self.subTest(mode=mode, clause=clause):
                         self.assertIn(clause, workflow['jobs'][mode]['if'])
 
     def test_source_reader_is_fixed_source_only_and_never_minted_in_recovery(self):
-        self.assertIn('publish', self.recipe['jobs'])
-        self.assertIn('recover', self.recipe['jobs'])
+        self.assertIn('publish', self.recipes['publish']['jobs'])
+        self.assertIn('recover', self.recipes['recover']['jobs'])
         for mode in ['validate', 'publish']:
-            steps = self.recipe['jobs'][mode]['steps']
+            steps = self.recipes[mode]['jobs'][mode]['steps']
             readers = [step for step in steps if 'create-github-app-token@' in step.get('uses', '')]
             self.assertEqual(len(readers), 1)
             self.assertEqual(readers[0]['with']['owner'], 'cryptolabsza')
@@ -527,7 +540,7 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
             for step in steps:
                 if 'actions/checkout@' in step.get('uses', ''):
                     self.assertEqual(step['with']['persist-credentials'], 'false')
-        encoded = json.dumps(self.recipe['jobs']['recover']['steps'])
+        encoded = json.dumps(self.recipes['recover']['jobs']['recover']['steps'])
         for forbidden in ['create-github-app-token', 'SOURCE_READER', 'SOURCE_WORKFLOW_ID', 'inputs.run_id',
                           'inputs.run_attempt', 'inputs.artifact_id', 'inputs.sha', 'inputs.branch']:
             self.assertNotIn(forbidden, encoded)
@@ -719,14 +732,14 @@ class RecipePrecredentialIntegrationTests(unittest.TestCase):
     def setUp(self):
         import yaml
         self.root = pathlib.Path(__file__).resolve().parents[1]
-        self.recipe = yaml.load((self.root / '.github/workflows/dc-exporter-publish.yml').read_text(), Loader=yaml.BaseLoader)
         self.caller = yaml.load((self.root / '.github/workflows/publish.yml').read_text(), Loader=yaml.BaseLoader)
+        self.recipes = {mode: called_recipe(self.root, self.caller, mode) for mode in self.caller['jobs']}
 
     def preflight(self, mode, *, changes=None, workflow_id='7', operation_env_control=False):
         import re
         import subprocess
         import sys
-        job = self.recipe['jobs'][mode]
+        job = self.recipes[mode]['jobs'][mode]
         step_index = next(i for i, step in enumerate(job['steps']) if 'pool-publish.sh preflight' in step.get('run', ''))
         step = job['steps'][step_index]
         inputs = dict(mode=mode, run_id='10', run_attempt='2', artifact_id='90', sha=SHA,
@@ -811,6 +824,38 @@ class RecipePrecredentialIntegrationTests(unittest.TestCase):
         recovery = dict(mode='recover', run_id='', run_attempt='', artifact_id='', sha='', branch='', recover_stage_id='25')
         selector = ProtectedActivationWorkflowTests()
         for key, value in [('run_id', '10'), ('run_attempt', '2'), ('artifact_id', '90'), ('sha', SHA), ('branch', 'dev')]:
-            for workflow in [self.caller, self.recipe]:
+            for workflow in [self.caller, *self.recipes.values()]:
                 with self.subTest(field=key):
                     self.assertEqual(selector.selected_jobs(workflow, recovery | {key: value}), [])
+
+
+class StaticReusablePermissionGraphTests(unittest.TestCase):
+    def setUp(self):
+        import yaml
+        self.root = pathlib.Path(__file__).resolve().parents[1]
+        self.caller = yaml.load((self.root / '.github/workflows/publish.yml').read_text(), Loader=yaml.BaseLoader)
+
+    def test_every_nested_job_permission_fits_caller_ignoring_runtime_conditions(self):
+        # GitHub rejects this graph before evaluating if predicates or jobs.
+        rank = {'none': 0, 'read': 1, 'write': 2}
+        for mode, call in self.caller['jobs'].items():
+            recipe = called_recipe(self.root, self.caller, mode)
+            available = call.get('permissions', self.caller.get('permissions', {}))
+            for job_name, job in recipe['jobs'].items():
+                requested = job.get('permissions', recipe.get('permissions', {}))
+                for scope, level in requested.items():
+                    with self.subTest(caller=mode, nested_job=job_name, scope=scope):
+                        self.assertLessEqual(rank[level], rank[available.get(scope, 'none')],
+                                             'Nested permissions are checked even when the nested job if would be false')
+
+    def test_read_recipe_contains_only_validation_and_writer_recipe_only_explicit_writes(self):
+        self.assertIn('/dc-exporter-validate.yml@', self.caller['jobs']['validate']['uses'])
+        read = called_recipe(self.root, self.caller, 'validate')
+        writer = called_recipe(self.root, self.caller, 'publish')
+        self.assertEqual(set(read['jobs']), {'validate'})
+        self.assertEqual(read['permissions'], {'contents': 'read'})
+        self.assertEqual(read['jobs']['validate']['permissions'], {'contents': 'read'})
+        self.assertEqual(set(writer['jobs']), {'publish', 'recover'})
+        self.assertEqual(writer, called_recipe(self.root, self.caller, 'recover'))
+        for job in writer['jobs'].values():
+            self.assertEqual(job['permissions'], {'contents': 'write'})
