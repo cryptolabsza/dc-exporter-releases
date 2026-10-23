@@ -64,7 +64,7 @@ jobs:
       == '' &&
       ((inputs.tag == '' && inputs.release_policy == '') ||
       (inputs.branch == 'main' && inputs.tag == 'v0.3.0' && inputs.release_policy == 'v0.3.0-limited-qualification'))
-    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-validate.yml@957ccad33686720b7f1a6a0776af6974b776c9b7
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-validate.yml@410a8b15b15f1959314c5b47248987fd5587ae9d
     with:
       mode: validate
       run_id: ${{ inputs.run_id }}
@@ -91,7 +91,7 @@ jobs:
       == '' &&
       ((inputs.branch == 'dev' && inputs.tag == '' && inputs.release_policy == '') ||
       (inputs.branch == 'main' && inputs.tag == 'v0.3.0' && inputs.release_policy == 'v0.3.0-limited-qualification'))
-    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@957ccad33686720b7f1a6a0776af6974b776c9b7
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@410a8b15b15f1959314c5b47248987fd5587ae9d
     with:
       mode: publish
       run_id: ${{ inputs.run_id }}
@@ -116,7 +116,7 @@ jobs:
       inputs.mode == 'recover' &&
       inputs.run_id == '' && inputs.run_attempt == '' && inputs.artifact_id == '' && inputs.sha == '' && inputs.branch == '' && inputs.recover_stage_id
       != '' && inputs.tag == '' && inputs.release_policy == ''
-    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@957ccad33686720b7f1a6a0776af6974b776c9b7
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@410a8b15b15f1959314c5b47248987fd5587ae9d
     with:
       mode: recover
       recover_stage_id: ${{ inputs.recover_stage_id }}
