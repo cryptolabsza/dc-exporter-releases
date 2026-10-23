@@ -30,6 +30,21 @@ MAX_TOTAL = 200 * 1024 * 1024
 MAX_FILE = 128 * 1024 * 1024
 # Hardware acceptance and stable promotion require a separately reviewed change.
 HARDWARE_ACCEPTED = False
+RELEASE_POLICY = 'v0.3.0-limited-qualification'
+RELEASE_TAG = 'v0.3.0'
+RELEASE_VERSION = '0.3.0'
+RELEASE_DISCLOSURE = ('RTX 5090 RUSD support remains opt-in and experimental; full GPU Burn/NCCL '
+                      'qualification is pending. Operational live VM passthrough acceptance is pending. '
+                      'This software release does not establish full hardware acceptance.')
+RELEASE_NOTES = ('# DC Exporter v0.3.0\n\n'
+                 'Linux x86-64 GPU monitoring, diagnostics and terminal inspection.\n\n'
+                 '- GPU health and numeric error codes distinguish readable telemetry from reset-required state.\n'
+                 '- TUI diagnostics and telemetry expose collection status alongside temperature values.\n'
+                 '- RTX 5090 RUSD memory temperature collection remains opt-in and experimental.\n\n'
+                 '**Qualification limits:** ' + RELEASE_DISCLOSURE + '\n\n'
+                 '[Source repository](https://github.com/cryptolabsza/dc-exporter-rs-public) | '
+                 '[Exact source tag v0.3.0](https://github.com/cryptolabsza/dc-exporter-rs-public/tree/v0.3.0)\n\n'
+                 '## Exact build provenance and asset hashes\n\n')
 VERSION = re.compile(r'\d+\.\d+\.\d+\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 
@@ -172,6 +187,13 @@ def validate_stable(source, tag, version, *, tag_sha, main_ancestor, hardware_ac
     validate_source(source)
     require(source['ref'] == 'refs/heads/main' and VERSION.fullmatch(version) is not None)
     require(tag == 'v' + version and tag_sha == source['sha'] and main_ancestor is True and hardware_accepted is True)
+
+
+# TRACEWEAVER: entrypoint=validate_versioned; req=REQ-VERSIONED-001; trace=TRACE-VERSIONED-001; ver=VER-VERSIONED-001
+def validate_versioned(source, tag, version, policy):
+    validate_source(source)
+    require(source['ref'] == 'refs/heads/main' and tag == RELEASE_TAG and
+            version == RELEASE_VERSION and policy == RELEASE_POLICY)
 
 
 def public_failure_messages():
@@ -372,6 +394,101 @@ class GithubAPI:
         require(positive(release['id']) and name == os.path.basename(name) and re.fullmatch(r'[A-Za-z0-9_.-]+', name) is not None)
         self.request('POST', f"/repos/{RELEASE_REPOSITORY}/releases/{release['id']}/assets?name={urllib.parse.quote(name)}", payload=data, upload=True)
 
+    def versioned_fresh(self, source):
+        require(self.tip('main') == source['sha'] and self.tag_sha(RELEASE_TAG) == source['sha'])
+
+    def versioned_metadata(self, source, artifact_id, files):
+        publisher = os.environ['GITHUB_SHA']
+        require(SHA.fullmatch(publisher) is not None)
+        body = dict(schema=1, kind='dc-exporter-versioned-release',
+                    policy=dict(id=RELEASE_POLICY, hardware_accepted=False),
+                    disclosure=RELEASE_DISCLOSURE, source=source, source_tag=RELEASE_TAG,
+                    artifact_id=artifact_id, publisher_sha=publisher, files=self.file_receipt(files))
+        return dict(tag_name=RELEASE_TAG, target_commitish=publisher, name='DC Exporter ' + RELEASE_TAG,
+                    body=RELEASE_NOTES + '```json\n' + json.dumps(body, sort_keys=True, indent=2) + '\n```',
+                    prerelease=False)
+
+    def versioned_target_tag(self, publisher, *, required=False):
+        try:
+            tag = self.request('GET', f'/repos/{RELEASE_REPOSITORY}/git/ref/tags/{RELEASE_TAG}')
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                require(not required)
+                return
+            raise
+        obj = tag.get('object', {})
+        require(obj.get('type') == 'commit' and obj.get('sha') == publisher)
+
+    def find_versioned(self):
+        found = []
+        for page in range(1, 11):
+            batch = self.request('GET', f'/repos/{RELEASE_REPOSITORY}/releases?per_page=100&page={page}')
+            require(isinstance(batch, list))
+            found.extend(release for release in batch if release.get('tag_name') == RELEASE_TAG)
+            require(len(found) <= 1)
+            if len(batch) < 100:
+                return found[0] if found else None
+        raise ValueError('Versioned discovery bound exceeded')
+
+    def check_versioned(self, source, metadata, files):
+        self.versioned_fresh(source)
+        self.versioned_target_tag(metadata['target_commitish'])
+        release = self.find_versioned()
+        if release is None:
+            return None, {}
+        require(positive(release.get('id')) and type(release.get('draft')) is bool)
+        require(all(release.get(key) == value for key, value in metadata.items()))
+        existing = self.release_files(release)
+        require(set(existing).issubset(files) and all(files[name] == data for name, data in existing.items()))
+        require(release['draft'] or existing == files)
+        if not release['draft']:
+            self.versioned_target_tag(metadata['target_commitish'], required=True)
+        return release, existing
+
+    # TRACEWEAVER: entrypoint=GithubAPI.publish_versioned; req=REQ-VERSIONED-001; trace=TRACE-VERSIONED-001; ver=VER-VERSIONED-001
+    def publish_versioned(self, source, artifact_id, files, *, publish):
+        # Separate from the proven dev alias/recovery state machine. Drafts are
+        # discovered by authenticated listing, never the public tag endpoint.
+        metadata = self.versioned_metadata(source, artifact_id, files)
+        release, existing = self.check_versioned(source, metadata, files)
+        if not publish or release is not None and not release['draft']:
+            self.versioned_fresh(source)
+            return
+        if release is None:
+            self.versioned_fresh(source)
+            try:
+                self.request('POST', f'/repos/{RELEASE_REPOSITORY}/releases',
+                             payload=metadata | dict(draft=True, make_latest='false'))
+            except Exception:
+                # A lost create response is reconciled by exact authenticated
+                # discovery. Conflicting metadata is never adopted.
+                release, existing = self.check_versioned(source, metadata, files)
+                if release is None:
+                    raise
+            release, existing = self.check_versioned(source, metadata, files)
+            require(release is not None)
+        rid = release['id']
+        for name, data in sorted(files.items()):
+            if name not in existing:
+                current, checked = self.check_versioned(source, metadata, files)
+                require(current is not None and current['id'] == rid and current['draft'] is True)
+                if name not in checked:
+                    self.versioned_fresh(source)
+                    self.upload_to_release(current, name, data)
+        current, checked = self.check_versioned(source, metadata, files)
+        require(current is not None and current['id'] == rid and checked == files)
+        if current['draft']:
+            self.versioned_fresh(source)
+            try:
+                self.request('PATCH', f'/repos/{RELEASE_REPOSITORY}/releases/{rid}',
+                             payload=dict(draft=False, prerelease=False, make_latest='true'))
+            except Exception:
+                final, checked = self.check_versioned(source, metadata, files)
+                require(final is not None and final['id'] == rid and final['draft'] is False and checked == files)
+        final, checked = self.check_versioned(source, metadata, files)
+        require(final is not None and final['id'] == rid and final['draft'] is False and checked == files)
+        self.versioned_fresh(source)
+
     @staticmethod
     def file_receipt(files):
         return {name: dict(size=len(data), sha256=hashlib.sha256(data).hexdigest()) for name, data in files.items()}
@@ -544,13 +661,14 @@ def main(argv=None, *, api=None):
     parser.add_argument('--sha')
     parser.add_argument('--branch', choices=['dev', 'main'])
     parser.add_argument('--tag', default='')
+    parser.add_argument('--release-policy', default='')
     phase = 'arguments'
     try:
         args = parser.parse_args(argv)
         require(not (args.validate_only and args.publish))
         if args.preflight:
             require(not args.validate_only and not args.publish)
-            require(all(value is None for value in [args.run_id, args.run_attempt, args.artifact_id, args.sha, args.branch, args.recover_stage_id]) and not args.tag)
+            require(all(value is None for value in [args.run_id, args.run_attempt, args.artifact_id, args.sha, args.branch, args.recover_stage_id]) and not args.tag and not args.release_policy)
             phase = 'runtime-preflight'
             preflight()
             return 0
@@ -562,7 +680,7 @@ def main(argv=None, *, api=None):
         if args.recover_stage_id is not None:
             phase = 'recovery'
             require(not args.validate_only and not args.publish)
-            require(positive(args.recover_stage_id) and all(value is None for value in [args.run_id, args.run_attempt, args.artifact_id, args.sha, args.branch]) and not args.tag)
+            require(positive(args.recover_stage_id) and all(value is None for value in [args.run_id, args.run_attempt, args.artifact_id, args.sha, args.branch]) and not args.tag and not args.release_policy)
             if api is None:
                 phase = 'runtime-preflight'
                 preflight()
@@ -578,6 +696,11 @@ def main(argv=None, *, api=None):
         require(positive(args.run_id) and positive(args.run_attempt) and positive(args.artifact_id) and args.branch in {'dev', 'main'})
         source = dict(repository=SOURCE_REPOSITORY, repository_id=SOURCE_REPOSITORY_ID, sha=args.sha, ref='refs/heads/' + args.branch, run_id=args.run_id, run_attempt=args.run_attempt, artifact_name=f'dc-exporter-{SOURCE_REPOSITORY_ID}-{args.run_id}-{args.run_attempt}-{args.sha}')
         validate_source(source)
+        versioned = bool(args.tag or args.release_policy)
+        if versioned:
+            require(args.branch == 'main' and args.tag == RELEASE_TAG and args.release_policy == RELEASE_POLICY)
+            require(default == 'main' and os.environ.get('GITHUB_REPOSITORY_ID') == str(RELEASE_REPOSITORY_ID)
+                    and os.environ.get('GITHUB_REF_PROTECTED') == 'true')
         if api is None:
             phase = 'runtime-preflight'
             preflight()
@@ -593,6 +716,15 @@ def main(argv=None, *, api=None):
         files, manifest = validate_archive(api.download_artifact(args.artifact_id), source)
         phase = 'freshness'
         require(api.tip(args.branch) == args.sha)
+        if versioned:
+            phase = 'versioned-validation'
+            validate_versioned(source, args.tag, manifest['cargo_version'], args.release_policy)
+            require(api.main_ancestor(args.sha) is True)
+            phase = 'versioned-publication' if args.publish else 'versioned-validation'
+            api.publish_versioned(source, args.artifact_id, files, publish=args.publish)
+            print('Publisher verified exact versioned artifact bytes' if args.publish else
+                  'Publisher validated versioned release policy and exact bytes; no release writes requested')
+            return 0
         if not args.publish:
             require(not args.tag)
             print('Publisher validated exact artifact bytes; no release writes requested')

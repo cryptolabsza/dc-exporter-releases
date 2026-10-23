@@ -1,4 +1,5 @@
 # TRACEWEAVER: file-role=protected-publisher-caller; req=REQ-PUB-004; trace=TRACE-PUB-004; ver=VER-PUB-004
+# TRACEWEAVER: file-role=versioned-policy-caller; req=REQ-VERSIONED-001; trace=TRACE-VERSIONED-001; ver=VER-VERSIONED-001
 name: Protected exporter artifact publisher
 on:
   workflow_dispatch:
@@ -32,6 +33,14 @@ on:
         description: 'Source branch: dev or main; leave empty for recovery'
         required: false
         type: string
+      tag:
+        description: Source tag v0.3.0 for the reviewed versioned release; empty for dev/recovery
+        required: false
+        type: string
+      release_policy:
+        description: Reviewed v0.3.0-limited-qualification policy; empty for dev/recovery
+        required: false
+        type: string
       recover_stage_id:
         description: Recorded target release stage ID; recovery only
         required: false
@@ -52,8 +61,10 @@ jobs:
       github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
       inputs.mode == 'validate' &&
       inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
-      == ''
-    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-validate.yml@957ccad33686720b7f1a6a0776af6974b776c9b7
+      == '' &&
+      ((inputs.tag == '' && inputs.release_policy == '') ||
+      (inputs.branch == 'main' && inputs.tag == 'v0.3.0' && inputs.release_policy == 'v0.3.0-limited-qualification'))
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-validate.yml@410a8b15b15f1959314c5b47248987fd5587ae9d
     with:
       mode: validate
       run_id: ${{ inputs.run_id }}
@@ -61,6 +72,8 @@ jobs:
       artifact_id: ${{ inputs.artifact_id }}
       sha: ${{ inputs.sha }}
       branch: ${{ inputs.branch }}
+      tag: ${{ inputs.tag }}
+      release_policy: ${{ inputs.release_policy }}
     secrets:
       DC_EXPORTER_SOURCE_READER_APP_KEY: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
     permissions:
@@ -75,8 +88,10 @@ jobs:
       github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
       inputs.mode == 'publish' &&
       inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
-      == '' && inputs.branch == 'dev'
-    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@957ccad33686720b7f1a6a0776af6974b776c9b7
+      == '' &&
+      ((inputs.branch == 'dev' && inputs.tag == '' && inputs.release_policy == '') ||
+      (inputs.branch == 'main' && inputs.tag == 'v0.3.0' && inputs.release_policy == 'v0.3.0-limited-qualification'))
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@410a8b15b15f1959314c5b47248987fd5587ae9d
     with:
       mode: publish
       run_id: ${{ inputs.run_id }}
@@ -84,6 +99,8 @@ jobs:
       artifact_id: ${{ inputs.artifact_id }}
       sha: ${{ inputs.sha }}
       branch: ${{ inputs.branch }}
+      tag: ${{ inputs.tag }}
+      release_policy: ${{ inputs.release_policy }}
     secrets:
       DC_EXPORTER_SOURCE_READER_APP_KEY: ${{ secrets.DC_EXPORTER_SOURCE_READER_APP_KEY }}
     permissions:
@@ -98,8 +115,8 @@ jobs:
       github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
       inputs.mode == 'recover' &&
       inputs.run_id == '' && inputs.run_attempt == '' && inputs.artifact_id == '' && inputs.sha == '' && inputs.branch == '' && inputs.recover_stage_id
-      != ''
-    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@957ccad33686720b7f1a6a0776af6974b776c9b7
+      != '' && inputs.tag == '' && inputs.release_policy == ''
+    uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@410a8b15b15f1959314c5b47248987fd5587ae9d
     with:
       mode: recover
       recover_stage_id: ${{ inputs.recover_stage_id }}

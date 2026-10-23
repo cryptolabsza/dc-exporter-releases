@@ -457,11 +457,14 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
                   'github.ref_protected': True,
                   'github.workflow_ref': 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main'}
         values.update(context or {})
+        values.update({'inputs.tag': '', 'inputs.release_policy': ''})
         values.update({'inputs.' + key: value for key, value in inputs.items()})
         def evaluate(node):
             if isinstance(node, ast.Constant): return node.value
             if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
                 return all(evaluate(value) for value in node.values)
+            if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+                return any(evaluate(value) for value in node.values)
             if isinstance(node, ast.Compare) and len(node.ops) == 1:
                 left, right = evaluate(node.left), evaluate(node.comparators[0])
                 if isinstance(node.ops[0], ast.Eq): return left == right
@@ -470,7 +473,7 @@ class ProtectedActivationWorkflowTests(unittest.TestCase):
         selected = []
         for name, job in workflow['jobs'].items():
             expression = re.sub(r'\b(?:github|inputs)\.[A-Za-z_.]+',
-                                lambda match: repr(values[match[0]]), job['if']).replace('&&', ' and ')
+                                lambda match: repr(values[match[0]]), job['if']).replace('&&', ' and ').replace('||', ' or ')
             if evaluate(ast.parse('(' + expression + ')', mode='eval').body): selected.append(name)
         return selected
 
@@ -743,7 +746,7 @@ class RecipePrecredentialIntegrationTests(unittest.TestCase):
         step_index = next(i for i, step in enumerate(job['steps']) if 'pool-publish.sh preflight' in step.get('run', ''))
         step = job['steps'][step_index]
         inputs = dict(mode=mode, run_id='10', run_attempt='2', artifact_id='90', sha=SHA,
-                      branch='dev', recover_stage_id='')
+                      branch='dev', recover_stage_id='', tag='', release_policy='')
         if mode == 'recover':
             inputs.update(run_id='', run_attempt='', artifact_id='', sha='', branch='', recover_stage_id='25')
         inputs.update(changes or {})
