@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # TRACEWEAVER: file-role=bounded-shared-publisher-entrypoint; req=REQ-PUB-003; trace=TRACE-PUB-003; ver=VER-PUB-003
+# TRACEWEAVER: file-role=versioned-policy-launcher; req=REQ-VERSIONED-001; trace=TRACE-VERSIONED-001; ver=VER-VERSIONED-001
 # Trusted release-repository launcher; downloaded artifact data never enters commands.
 set -euo pipefail
 umask 077
@@ -26,6 +27,7 @@ fi
 if [[ "$mode" == recover ]]; then
   [[ "${INPUT_RECOVER_STAGE_ID:-}" =~ ^[1-9][0-9]*$ ]]
   [[ -z "${INPUT_RUN_ID:-}${INPUT_RUN_ATTEMPT:-}${INPUT_ARTIFACT_ID:-}${INPUT_SHA:-}${INPUT_BRANCH:-}" ]]
+  [[ -z "${INPUT_TAG:-}${INPUT_RELEASE_POLICY:-}" ]]
 else
   [[ -z "${INPUT_RECOVER_STAGE_ID:-}" ]]
   [[ "${INPUT_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]]
@@ -33,7 +35,11 @@ else
   [[ "${INPUT_ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]
   [[ "${INPUT_SHA:-}" =~ ^[0-9a-f]{40}$ ]]
   [[ "${INPUT_BRANCH:-}" == dev || "${INPUT_BRANCH:-}" == main ]]
-  [[ "$mode" != publish || "$INPUT_BRANCH" == dev ]]
+  if [[ -n "${INPUT_TAG:-}${INPUT_RELEASE_POLICY:-}" ]]; then
+    [[ "$INPUT_BRANCH" == main && "${INPUT_TAG:-}" == v0.3.0 && "${INPUT_RELEASE_POLICY:-}" == v0.3.0-limited-qualification ]]
+  else
+    [[ "$mode" != publish || "$INPUT_BRANCH" == dev ]]
+  fi
   [[ "${SOURCE_WORKFLOW_ID:-}" =~ ^[1-9][0-9]*$ ]]
 fi
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
@@ -64,6 +70,10 @@ fi
 [[ -n "${SOURCE_READER_TOKEN:-}" && -n "${GITHUB_TOKEN:-}" ]]
 operation=--validate-only
 if [[ "$mode" == publish ]]; then operation=--publish; fi
+release_args=()
+if [[ -n "${INPUT_TAG:-}" ]]; then
+  release_args=(--tag "$INPUT_TAG" --release-policy "$INPUT_RELEASE_POLICY")
+fi
 # Only this fixed allowlist crosses into the unprivileged container. Values are
 # forwarded from runtime environment, never written into a file or command line.
 exec docker run "${common[@]}" --network bridge \
@@ -71,4 +81,4 @@ exec docker run "${common[@]}" --network bridge \
   "${identity[@]}" \
   "$image" scripts/ci/publish.py "$operation" \
   --run-id "$INPUT_RUN_ID" --run-attempt "$INPUT_RUN_ATTEMPT" \
-  --artifact-id "$INPUT_ARTIFACT_ID" --sha "$INPUT_SHA" --branch "$INPUT_BRANCH"
+  --artifact-id "$INPUT_ARTIFACT_ID" --sha "$INPUT_SHA" --branch "$INPUT_BRANCH" "${release_args[@]}"

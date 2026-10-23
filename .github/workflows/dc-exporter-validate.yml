@@ -1,4 +1,5 @@
 # TRACEWEAVER: file-role=protected-shared-readonly-validation-recipe; req=REQ-PUB-004; trace=TRACE-PUB-004; ver=VER-PUB-004
+# TRACEWEAVER: file-role=versioned-policy-validation-recipe; req=REQ-VERSIONED-001; trace=TRACE-VERSIONED-001; ver=VER-VERSIONED-001
 name: Trusted exporter validation recipe
 # Default validate launches the helper with --validate-only.
 on:
@@ -23,6 +24,12 @@ on:
       branch:
         required: false
         type: string
+      tag:
+        required: false
+        type: string
+      release_policy:
+        required: false
+        type: string
       recover_stage_id:
         required: false
         type: string
@@ -42,7 +49,9 @@ jobs:
       github.workflow_ref == 'cryptolabsza/dc-exporter-releases/.github/workflows/publish.yml@refs/heads/main' &&
       inputs.mode == 'validate' &&
       inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
-      == ''
+      == '' &&
+      ((inputs.tag == '' && inputs.release_policy == '') ||
+      (inputs.branch == 'main' && inputs.tag == 'v0.3.0' && inputs.release_policy == 'v0.3.0-limited-qualification'))
     runs-on:
       group: ci-publish-ephemeral
       labels: ci-linux-publish-v1-r1141480624
@@ -70,6 +79,8 @@ jobs:
         INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
         INPUT_SHA: ${{ inputs.sha }}
         INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_RELEASE_POLICY: ${{ inputs.release_policy }}
       run: bash scripts/ci/pool-publish.sh preflight
     - name: Mint dedicated source-reader installation token
       id: reader
@@ -94,6 +105,8 @@ jobs:
         INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
         INPUT_SHA: ${{ inputs.sha }}
         INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_RELEASE_POLICY: ${{ inputs.release_policy }}
       run: bash scripts/ci/pool-publish.sh validate
     permissions:
       contents: read
