@@ -144,7 +144,7 @@ mounts. Full-hardware-qualification publication remains disabled
 the bounded versioned software release described above.
 
 Both recipe paths are pinned to reviewed commit
-`410a8b15b15f1959314c5b47248987fd5587ae9d`. Read-only validation uses its
+`d7b4a88e71ea2b835aaf08753254ff2d236b8f16`. Read-only validation uses its
 separate recipe; publishing and recovery use explicit modes in the writer
 recipe. Runtime validation does not establish hardware qualification.
 
