@@ -21,10 +21,10 @@ Development output is experimental. The mutable `dev-latest` name is a channel,
 not an immutable identity. Retain the exact artifact hash and corresponding build
 manifest when testing or deploying a candidate.
 
-For versioned **0.3.0** artifacts, the manifest identifies the exact protected
-source `main` commit and successful build. The source tag `v0.3.0` identifies
+For versioned **0.3.2** artifacts, the manifest identifies the exact protected
+source `main` commit and successful build. The source tag `v0.3.2` identifies
 that commit; the tag in this distribution repository identifies the trusted
-publisher commit. The fixed `v0.3.0-limited-qualification` policy is a normal
+publisher commit. The fixed `v0.3.2-limited-qualification` policy is a normal
 software release with the experimental feature limits below. It does not
 establish full hardware acceptance. Historical stable **0.2.8** assets and
 development releases keep their original provenance.
@@ -102,8 +102,8 @@ existing bytes, then stages the `dev-latest` replacement with recorded recovery
 receipts. The previous complete release and its original metadata remain
 available. Downloaded artifact content is never executed.
 
-The reviewed versioned route uses `branch=main`, `tag=v0.3.0` and
-`release_policy=v0.3.0-limited-qualification` with the exact source receipt.
+The reviewed versioned route uses `branch=main`, `tag=v0.3.2` and
+`release_policy=v0.3.2-limited-qualification` with the exact source receipt.
 Both `mode=validate` and `mode=publish` check this fixed policy, artifact version,
 current source main, peeled source tag, ancestry, target tag and existing release
 metadata/assets. Validation performs GET requests only. An ordinary main
@@ -112,7 +112,7 @@ validation without tag/policy remains an artifact-only check.
 Versioned publication creates a private draft containing fixed qualification
 disclosures, exact source/run/attempt/artifact/publisher provenance and every asset
 hash. It resumes only a matching draft with identical existing bytes. After all
-ten assets are read back, one final transition publishes `v0.3.0` as a normal
+ten assets are read back, one final transition publishes `v0.3.2` as a normal
 release and selects it as latest. Main and source tag are checked before every
 mutation and after completion; these observations do not make two repositories
 an atomic transaction. An exact complete published retry performs no writes.
@@ -122,7 +122,7 @@ for an exact-input retry. An empty or incomplete asset left by a failed upload
 also causes HOLD; recovery requires a separately reviewed, scoped action.
 If the final response is lost, authenticated readback
 must establish the result; this route never deletes history or rotates dev aliases.
-RTX 5090 remains opt-in and experimental, full GPU Burn/NCCL qualification is
+Automatic VRAM backend selection is the source default; RTX 5090 RUSD remains experimental and limited to exact drivers 590.48.01, 595.99.02 and 615.71.09. Full GPU Burn/NCCL qualification is
 pending, and operational live VM passthrough acceptance is pending.
 
 `mode=recover` requires only the recorded target release `recover_stage_id`.
@@ -140,11 +140,11 @@ jobs mint a dedicated App token limited to `dc-exporter-rs-public` with Actions
 and contents read permissions. The bounded nonroot publisher container forwards
 credentials by environment name and retains its resource limits and read-only
 mounts. Full-hardware-qualification publication remains disabled
-(`HARDWARE_ACCEPTED=False`); only the separately reviewed v0.3.0 policy enables
+(`HARDWARE_ACCEPTED=False`); only the separately reviewed v0.3.2 policy enables
 the bounded versioned software release described above.
 
 Both recipe paths are pinned to reviewed commit
-`410a8b15b15f1959314c5b47248987fd5587ae9d`. Read-only validation uses its
+`d7b4a88e71ea2b835aaf08753254ff2d236b8f16`. Read-only validation uses its
 separate recipe; publishing and recovery use explicit modes in the writer
 recipe. Runtime validation does not establish hardware qualification.
 
