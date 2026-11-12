@@ -51,7 +51,7 @@ jobs:
       inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
       == '' &&
       ((inputs.branch == 'dev' && inputs.tag == '' && inputs.release_policy == '') ||
-      (inputs.branch == 'main' && inputs.tag == 'v0.3.0' && inputs.release_policy == 'v0.3.0-limited-qualification'))
+      (inputs.branch == 'main' && inputs.tag == 'v0.3.2' && inputs.release_policy == 'v0.3.2-limited-qualification'))
     runs-on:
       group: ci-publish-ephemeral
       labels: ci-linux-publish-v1-r1141480624

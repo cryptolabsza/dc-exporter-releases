@@ -1,5 +1,5 @@
 # TRACEWEAVER: file-role=versioned-release-contract; req=REQ-VERSIONED-001; trace=TRACE-VERSIONED-001; ver=VER-VERSIONED-001
-"""Exact v0.3.0 publication, using opaque bytes and an in-memory HTTP transport."""
+"""Exact v0.3.2 publication, using opaque bytes and an in-memory HTTP transport."""
 import ast
 import contextlib
 import copy
@@ -17,10 +17,10 @@ from unittest import mock
 import test_ci_publisher as baseline
 import test_public_publisher_contract as public
 
-POLICY = 'v0.3.0-limited-qualification'
+POLICY = 'v0.3.2-limited-qualification'
 SHA = 'a' * 40
 PUBLISHER_SHA = 'c' * 40
-TAG = 'v0.3.0'
+TAG = 'v0.3.2'
 
 
 def versioned_bundle():
@@ -28,11 +28,11 @@ def versioned_bundle():
     files = public.bundle(source=source)
     files.pop('manifest.json')
     files.pop('SHA256SUMS')
-    files['dc-exporter-rs_0.3.0_amd64.deb'] = files.pop('dc-exporter-rs_0.2.7_amd64.deb')
-    files['VERSION.txt'] = b'dc-exporter 0.3.0\n'
+    files['dc-exporter-rs_0.3.2_amd64.deb'] = files.pop('dc-exporter-rs_0.2.7_amd64.deb')
+    files['VERSION.txt'] = b'dc-exporter 0.3.2\n'
     files['SHA256SUMS'] = ''.join(hashlib.sha256(data).hexdigest() + '  ' + name + '\n'
                                     for name, data in sorted(files.items())).encode()
-    manifest = dict(schema=1, source=source, cargo_version='0.3.0', binary_version='0.3.0',
+    manifest = dict(schema=1, source=source, cargo_version='0.3.2', binary_version='0.3.2',
                     files={name: dict(size=len(data), sha256=hashlib.sha256(data).hexdigest())
                            for name, data in files.items()})
     files['manifest.json'] = json.dumps(manifest, sort_keys=True).encode()
@@ -212,9 +212,14 @@ class VersionedPublicationTests(unittest.TestCase):
         self.assertIn('error codes', prefix)
         self.assertIn('TUI', prefix)
         self.assertIn('telemetry', prefix)
+        self.assertIn('automatic', prefix.lower())
+        self.assertIn('driver', prefix.lower())
+        self.assertNotIn('opt-in', prefix.lower())
+        for driver in ['590.48.01', '595.99.02', '615.71.09']:
+            self.assertIn(driver, prefix)
         self.assertIn('experimental', prefix)
         self.assertIn('pending', prefix)
-        self.assertIn('https://github.com/cryptolabsza/dc-exporter-rs-public/tree/v0.3.0', prefix)
+        self.assertIn('https://github.com/cryptolabsza/dc-exporter-rs-public/tree/v0.3.2', prefix)
         recipe = json.loads(provenance.removesuffix('\n```'))
         self.assertEqual(recipe['policy']['id'], POLICY)
         self.assertIs(recipe['policy']['hardware_accepted'], False)
@@ -224,21 +229,21 @@ class VersionedPublicationTests(unittest.TestCase):
         self.assertEqual(recipe['publisher_sha'], PUBLISHER_SHA)
         self.assertEqual(recipe['files'], self.publisher.GithubAPI.file_receipt(self.files))
         disclosure = recipe['disclosure'].lower()
-        for text in ['experimental', 'opt-in', 'burn', 'nccl', 'pending', 'vm']:
+        for text in ['experimental', 'auto', 'burn', 'nccl', 'pending', 'vm']:
             self.assertIn(text, disclosure)
 
     def test_get_only_validation_checks_tag_ancestry_and_target_collisions(self):
         self.assertEqual(self.invoke('--validate-only'), 0)
         self.assertEqual(self.server.mutations, [])
         paths = [path for _, path in self.server.requests]
-        self.assertTrue(any('/git/ref/tags/v0.3.0' in path for path in paths))
+        self.assertTrue(any('/git/ref/tags/v0.3.2' in path for path in paths))
         self.assertTrue(any('/compare/' in path for path in paths))
         self.assertTrue(any(path.endswith('/releases') for path in paths))
         self.assertTrue(all(method == 'GET' for method, _ in self.server.requests))
 
     def test_invalid_policy_tag_branch_and_mixed_recovery_fail_without_writes(self):
         for flag, value in [('--release-policy', ''), ('--release-policy', 'waive-hardware'),
-                            ('--tag', 'v0.2.8'), ('--tag', 'v0.3.1'), ('--tag', ''), ('--branch', 'dev')]:
+                            ('--tag', 'v0.2.8'), ('--tag', 'v0.3.1'), ('--tag', 'v0.3.3'), ('--tag', ''), ('--branch', 'dev')]:
             args = list(self.args)
             args[args.index(flag) + 1] = value
             with self.subTest(flag=flag, value=value):
@@ -394,7 +399,7 @@ class VersionedWorkflowTests(unittest.TestCase):
         for mode, recipe in [('validate', self.read), ('publish', self.write)]:
             for workflow in [self.caller, recipe]:
                 self.assertEqual(self.selected(workflow, self.inputs(mode)), [mode])
-                for change in [{'tag': 'v0.2.8'}, {'tag': ''}, {'release_policy': ''},
+                for change in [{'tag': 'v0.2.8'}, {'tag': 'v0.3.3'}, {'tag': ''}, {'release_policy': ''},
                                {'release_policy': 'hardware-waiver'}, {'branch': 'dev'}, {'recover_stage_id': '25'}]:
                     with self.subTest(mode=mode, change=change):
                         self.assertEqual(self.selected(workflow, self.inputs(mode) | change), [])
@@ -424,7 +429,7 @@ class VersionedWorkflowTests(unittest.TestCase):
         launcher = public.ActualLauncherActivationTests()
         valid = dict(INPUT_BRANCH='main', INPUT_TAG=TAG, INPUT_RELEASE_POLICY=POLICY)
         for mode in ['validate', 'publish', 'preflight']:
-            for change in [{'INPUT_TAG': ''}, {'INPUT_TAG': 'v0.3.1'}, {'INPUT_RELEASE_POLICY': ''},
+            for change in [{'INPUT_TAG': ''}, {'INPUT_TAG': 'v0.3.1'}, {'INPUT_TAG': 'v0.3.3'}, {'INPUT_RELEASE_POLICY': ''},
                            {'INPUT_RELEASE_POLICY': 'waiver'}, {'INPUT_BRANCH': 'dev'},
                            {'INPUT_TAG': '$(touch /tmp/publisher-invalid)'}]:
                 result, args = launcher.launch(mode, changes=valid | {'INPUT_MODE': 'publish'} | change,

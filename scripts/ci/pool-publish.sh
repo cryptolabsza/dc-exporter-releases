@@ -36,7 +36,7 @@ else
   [[ "${INPUT_SHA:-}" =~ ^[0-9a-f]{40}$ ]]
   [[ "${INPUT_BRANCH:-}" == dev || "${INPUT_BRANCH:-}" == main ]]
   if [[ -n "${INPUT_TAG:-}${INPUT_RELEASE_POLICY:-}" ]]; then
-    [[ "$INPUT_BRANCH" == main && "${INPUT_TAG:-}" == v0.3.0 && "${INPUT_RELEASE_POLICY:-}" == v0.3.0-limited-qualification ]]
+    [[ "$INPUT_BRANCH" == main && "${INPUT_TAG:-}" == v0.3.2 && "${INPUT_RELEASE_POLICY:-}" == v0.3.2-limited-qualification ]]
   else
     [[ "$mode" != publish || "$INPUT_BRANCH" == dev ]]
   fi

@@ -30,20 +30,22 @@ MAX_TOTAL = 200 * 1024 * 1024
 MAX_FILE = 128 * 1024 * 1024
 # Hardware acceptance and stable promotion require a separately reviewed change.
 HARDWARE_ACCEPTED = False
-RELEASE_POLICY = 'v0.3.0-limited-qualification'
-RELEASE_TAG = 'v0.3.0'
-RELEASE_VERSION = '0.3.0'
-RELEASE_DISCLOSURE = ('RTX 5090 RUSD support remains opt-in and experimental; full GPU Burn/NCCL '
+RELEASE_POLICY = 'v0.3.2-limited-qualification'
+RELEASE_TAG = 'v0.3.2'
+RELEASE_VERSION = '0.3.2'
+RELEASE_DISCLOSURE = ('RTX 5090 RUSD support remains experimental and can be selected by default auto; full GPU Burn/NCCL '
                       'qualification is pending. Operational live VM passthrough acceptance is pending. '
                       'This software release does not establish full hardware acceptance.')
-RELEASE_NOTES = ('# DC Exporter v0.3.0\n\n'
+RELEASE_NOTES = ('# DC Exporter v0.3.2\n\n'
                  'Linux x86-64 GPU monitoring, diagnostics and terminal inspection.\n\n'
                  '- GPU health and numeric error codes distinguish readable telemetry from reset-required state.\n'
                  '- TUI diagnostics and telemetry expose collection status alongside temperature values.\n'
-                 '- RTX 5090 RUSD memory temperature collection remains opt-in and experimental.\n\n'
+                 '- VRAM temperature collection uses automatic backend selection by default.\n'
+                 '- Each GPU card in the TUI list shows its reported driver version.\n'
+                 '- Experimental RTX 5090 RUSD supports exact drivers 590.48.01, 595.99.02 and 615.71.09 only.\n\n'
                  '**Qualification limits:** ' + RELEASE_DISCLOSURE + '\n\n'
                  '[Source repository](https://github.com/cryptolabsza/dc-exporter-rs-public) | '
-                 '[Exact source tag v0.3.0](https://github.com/cryptolabsza/dc-exporter-rs-public/tree/v0.3.0)\n\n'
+                 '[Exact source tag v0.3.2](https://github.com/cryptolabsza/dc-exporter-rs-public/tree/v0.3.2)\n\n'
                  '## Exact build provenance and asset hashes\n\n')
 VERSION = re.compile(r'\d+\.\d+\.\d+\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')

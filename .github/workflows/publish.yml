@@ -34,11 +34,11 @@ on:
         required: false
         type: string
       tag:
-        description: Source tag v0.3.0 for the reviewed versioned release; empty for dev/recovery
+        description: Source tag v0.3.2 for the reviewed versioned release; empty for dev/recovery
         required: false
         type: string
       release_policy:
-        description: Reviewed v0.3.0-limited-qualification policy; empty for dev/recovery
+        description: Reviewed v0.3.2-limited-qualification policy; empty for dev/recovery
         required: false
         type: string
       recover_stage_id:
@@ -63,7 +63,7 @@ jobs:
       inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
       == '' &&
       ((inputs.tag == '' && inputs.release_policy == '') ||
-      (inputs.branch == 'main' && inputs.tag == 'v0.3.0' && inputs.release_policy == 'v0.3.0-limited-qualification'))
+      (inputs.branch == 'main' && inputs.tag == 'v0.3.2' && inputs.release_policy == 'v0.3.2-limited-qualification'))
     uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-validate.yml@410a8b15b15f1959314c5b47248987fd5587ae9d
     with:
       mode: validate
@@ -90,7 +90,7 @@ jobs:
       inputs.run_id != '' && inputs.run_attempt != '' && inputs.artifact_id != '' && inputs.sha != '' && inputs.branch != '' && inputs.recover_stage_id
       == '' &&
       ((inputs.branch == 'dev' && inputs.tag == '' && inputs.release_policy == '') ||
-      (inputs.branch == 'main' && inputs.tag == 'v0.3.0' && inputs.release_policy == 'v0.3.0-limited-qualification'))
+      (inputs.branch == 'main' && inputs.tag == 'v0.3.2' && inputs.release_policy == 'v0.3.2-limited-qualification'))
     uses: cryptolabsza/dc-exporter-releases/.github/workflows/dc-exporter-publish.yml@410a8b15b15f1959314c5b47248987fd5587ae9d
     with:
       mode: publish
